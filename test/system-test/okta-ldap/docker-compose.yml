@@ -1,0 +1,146 @@
+services:
+
+  # --- MySQL backend instance 1 (testdb, db1, db2) ---
+  mysql:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: testuser
+      MYSQL_PASSWORD: testpass
+    ports:
+      - "13306:3306"
+    volumes:
+      - ./init-mysql1.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # --- MySQL backend instance 2 (db3, db4) ---
+  mysql2:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: db3
+    ports:
+      - "13307:3306"
+    volumes:
+      - ./init-mysql2.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # --- PostgreSQL backend (testdb, db1, db2, db3, db4) ---
+  pgsql:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: testdb
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+    ports:
+      - "15432:5432"
+    volumes:
+      - ./init-pgsql1.sh:/docker-entrypoint-initdb.d/init.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d testdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # --- ProxySQL with Okta LDAP plugin ---
+  proxysql:
+    build:
+      context: ../../..
+      dockerfile: test/system-test/okta-ldap/Dockerfile.proxysql
+    ports:
+      - "16032:6032"   # MySQL admin
+      - "16033:6033"   # MySQL proxy
+      - "16132:6132"   # PgSQL admin
+      - "16133:6133"   # PgSQL proxy
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql2:
+        condition: service_healthy
+      pgsql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P", "6032", "-u", "admin", "-padmin"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # --- Test runner ---
+  test-runner:
+    image: okta-ldap-proxysql
+    depends_on:
+      proxysql:
+        condition: service_healthy
+    environment:
+      PROXYSQL_HOST: proxysql
+      PROXYSQL_ADMIN_PORT: "6032"
+      PROXYSQL_MYSQL_PORT: "6033"
+      PROXYSQL_PGSQL_PORT: "6133"
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      PGSQL_HOST: pgsql
+      PGSQL_PORT: "5432"
+      OKTA_USER: "tanapoln+test@lmwn.com"
+      OKTA_PASS: "P@ssw0rd"
+    volumes:
+      - ./run-tests.sh:/opt/run-tests.sh:ro
+    entrypoint: ["bash", "/opt/run-tests.sh"]
+
+  # --- DB whitelist test runner ---
+  test-db-whitelist:
+    image: okta-ldap-proxysql
+    depends_on:
+      proxysql:
+        condition: service_healthy
+    environment:
+      PROXYSQL_HOST: proxysql
+      PROXYSQL_ADMIN_PORT: "6032"
+      PROXYSQL_MYSQL_PORT: "6033"
+      OKTA_USER: "tanapoln+test@lmwn.com"
+      OKTA_PASS: "P@ssw0rd"
+    volumes:
+      - ./run-db-whitelist-tests.sh:/opt/run-db-whitelist-tests.sh:ro
+    entrypoint: ["bash", "/opt/run-db-whitelist-tests.sh"]
+
+  # --- PgSQL DB whitelist test runner ---
+  test-pgsql-db-whitelist:
+    image: okta-ldap-proxysql
+    depends_on:
+      proxysql:
+        condition: service_healthy
+    environment:
+      PROXYSQL_HOST: proxysql
+      PROXYSQL_ADMIN_PORT: "6032"
+      PROXYSQL_PGSQL_PORT: "6133"
+      PGSQL_HOST: pgsql
+      PGSQL_PORT: "5432"
+    volumes:
+      - ./run-pgsql-db-whitelist-tests.sh:/opt/run-pgsql-db-whitelist-tests.sh:ro
+    entrypoint: ["bash", "/opt/run-pgsql-db-whitelist-tests.sh"]
+
+  # --- Sysbench performance test runner ---
+  test-sysbench:
+    image: okta-ldap-proxysql
+    depends_on:
+      proxysql:
+        condition: service_healthy
+    environment:
+      PROXYSQL_HOST: proxysql
+      PROXYSQL_ADMIN_PORT: "6032"
+      PROXYSQL_MYSQL_PORT: "6033"
+      OKTA_USER: "tanapoln+test@lmwn.com"
+      OKTA_PASS: "P@ssw0rd"
+    volumes:
+      - ./run-sysbench-tests.sh:/opt/run-sysbench-tests.sh:ro
+    entrypoint: ["bash", "/opt/run-sysbench-tests.sh"]

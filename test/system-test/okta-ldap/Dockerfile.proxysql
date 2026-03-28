@@ -1,0 +1,84 @@
+FROM ubuntu:22.04 AS builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    automake \
+    bison \
+    bzip2 \
+    cmake \
+    flex \
+    g++ \
+    gawk \
+    gcc \
+    git \
+    gnutls-dev \
+    libconfig-dev \
+    libcurl4-openssl-dev \
+    libev-dev \
+    libevent-dev \
+    libglib2.0-dev \
+    libicu-dev \
+    libldap2-dev \
+    libpq-dev \
+    libreadline-dev \
+    libssl-dev \
+    libtool \
+    make \
+    mawk \
+    patch \
+    pkg-config \
+    python3 \
+    uuid-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/proxysql
+
+# Copy source tree
+COPY . .
+
+# Configure git safe directory (needed for git describe in Makefile)
+RUN git config --global --add safe.directory /opt/proxysql
+
+# Build dependencies + ProxySQL binary
+RUN make cleanbuild || true
+RUN make build_deps -j$(nproc)
+RUN make build_lib -j$(nproc)
+RUN make build_src -j$(nproc)
+
+# Build the Okta LDAP plugin
+RUN make build_okta_ldap_plugin -j$(nproc)
+
+# Verify artifacts
+RUN ls -la src/proxysql binaries/proxysql_okta_ldap_auth.so
+
+# --- Runtime stage ---
+FROM ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    libcurl4 \
+    libev4 \
+    libglib2.0-0 \
+    libldap-2.5-0 \
+    libpq5 \
+    libssl3 \
+    mysql-client \
+    postgresql-client \
+    sysbench \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /var/lib/proxysql /usr/lib/proxysql /etc/proxysql
+
+# Copy ProxySQL binary and plugin
+COPY --from=builder /opt/proxysql/src/proxysql /usr/bin/proxysql
+COPY --from=builder /opt/proxysql/binaries/proxysql_okta_ldap_auth.so /usr/lib/proxysql/proxysql_okta_ldap_auth.so
+
+# Copy config
+COPY test/system-test/okta-ldap/proxysql.cnf /etc/proxysql/proxysql.cnf
+
+EXPOSE 6032 6033 6132 6133
+
+# Start ProxySQL in foreground (--initial forces re-read of config file)
+CMD ["proxysql", "--initial", "-f", "-c", "/etc/proxysql/proxysql.cnf", "-D", "/var/lib/proxysql"]

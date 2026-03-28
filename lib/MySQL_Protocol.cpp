@@ -1906,12 +1906,14 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 						if ((*myds)->sess->default_schema) {
 							free((*myds)->sess->default_schema);
 						}
-						(*myds)->sess->default_schema=attr1.default_schema; // just the pointer is passed
+						(*myds)->sess->default_schema=attr1.default_schema; // ownership transferred
+						attr1.default_schema = NULL; // prevent double-free by free_account_details
 						// Free the previously set 'user_attributes' by 'GloMyLdapAuth'
 						if ((*myds)->sess->user_attributes) {
 							free((*myds)->sess->user_attributes);
 						}
-						(*myds)->sess->user_attributes = attr1.attributes; // just the pointer is passed
+						(*myds)->sess->user_attributes = attr1.attributes; // ownership transferred
+						attr1.attributes = NULL; // prevent double-free by free_account_details
 #ifdef DEBUG
 						proxy_info("Attributes for user %s: %s\n" , acct.username, attr1.attributes);
 #endif
@@ -1923,13 +1925,16 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 						userinfo->set(backend_username, NULL, NULL, NULL);
 						// 'MySQL_Connection_userinfo::set' duplicates the supplied information, 'free' is required.
 						free(backend_username);
-						if (attr1.sha1_pass==NULL) {
-							// currently proxysql doesn't know any sha1_pass for that specific user, let's set it!
-							// TODO: CHECK these usages of 'reply'
-							GloMyAuth->set_SHA1((char *)userinfo->username, USERNAME_FRONTEND,reply);
+						// For LDAP cleartext auth, set vars1.password to the backend user's
+						// password. This is critical because process_pkt_handshake_response
+						// (lines 2554-2557) overwrites userinfo->password with vars1.password
+						// AFTER this function returns.
+						if (vars1.password) free(vars1.password);
+						vars1.password = strdup(acct.password);
+						if (acct.sha1_pass) {
+							if (userinfo->sha1_pass) free(userinfo->sha1_pass);
+							userinfo->sha1_pass = sha1_pass_hex((char*)acct.sha1_pass);
 						}
-						if (userinfo->sha1_pass) free(userinfo->sha1_pass);
-						userinfo->sha1_pass=sha1_pass_hex(reply);
 						userinfo->fe_username=strdup((const char *)tmp_user);
 						free(tmp_user);
 						ret=true;

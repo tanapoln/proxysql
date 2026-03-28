@@ -647,6 +647,7 @@ account_details_t MySQL_Authentication::lookup(
 	if (lookup != cg.bt_map.end()) {
 		account_details_t* ad = lookup->second;
 
+		ret.username = strdup(username);
 		ret.password = strdup(ad->password);
 
 		if (ad->clear_text_password[PASSWORD_TYPE::PRIMARY]) {

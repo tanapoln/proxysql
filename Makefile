@@ -187,6 +187,16 @@ rag_ingest: build_deps
 rag_ingest_clean:
 	cd RAG_POC && ${MAKE} clean
 
+# Okta LDAP authentication plugin (shared library)
+# Requires: libldap (openldap-devel / libldap2-dev / brew install openldap)
+.PHONY: build_okta_ldap_plugin
+build_okta_ldap_plugin: build_deps
+	${MAKE} -f lib/Okta_LDAP_Plugin.mk CC=${CC} CXX=${CXX}
+
+.PHONY: clean_okta_ldap_plugin
+clean_okta_ldap_plugin:
+	${MAKE} -f lib/Okta_LDAP_Plugin.mk clean
+
 # legacy build targets (pre c++17)
 .PHONY: build_deps_legacy
 build_deps_legacy:
