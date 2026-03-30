@@ -21,3 +21,21 @@ jobs:
     secrets: inherit
     with:
       trigger: ${{ toJson(github) }}
+
+  publish:
+    needs: run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Publish pre-release (remove draft flag)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        BRANCH="${{ github.ref_name }}"
+        RELEASE_TAG="${BRANCH}-head"
+        echo "Publishing release ${RELEASE_TAG} as pre-release..."
+        gh release edit "${RELEASE_TAG}" \
+          --repo "${{ github.repository }}" \
+          --prerelease \
+          --draft=false

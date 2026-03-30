@@ -16,6 +16,10 @@ on:
       deb_version:
         description: 'ProxySQL .deb version (e.g. 3.0.6)'
         required: true
+      no_cache:
+        description: 'Build without Docker layer cache'
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || github.ref_name }}
@@ -126,5 +130,6 @@ jobs:
         build-args: |
           RELEASE_TAG=${{ steps.final.outputs.release_tag }}
           DEB_VERSION=${{ steps.final.outputs.deb_version }}
-        cache-from: type=gha
+        no-cache: ${{ inputs.no_cache || false }}
+        cache-from: ${{ (inputs.no_cache && ' ') || 'type=gha' }}
         cache-to: type=gha,mode=max
