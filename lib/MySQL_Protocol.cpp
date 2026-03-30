@@ -1884,16 +1884,6 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 			proxy_debug(PROXY_DEBUG_MYSQL_AUTH, 5, "Session=%p , DS=%p , username='%s' , password='%s'\n", (*myds), (*myds)->sess, backend_username, tmp_pass);
 			free(tmp_pass);
 #endif // debug
-			(*myds)->sess->default_hostgroup=attr1.default_hostgroup;
-			(*myds)->sess->default_schema=attr1.default_schema; // just the pointer is passed
-			(*myds)->sess->user_attributes = attr1.attributes; // just the pointer is passed, LDAP returns empty string
-#ifdef DEBUG
-			debug_spiffe_id(vars1.user,attr1.attributes, __LINE__, __func__);
-#endif
-			(*myds)->sess->schema_locked=attr1.schema_locked;
-			(*myds)->sess->transaction_persistent=attr1.transaction_persistent;
-			(*myds)->sess->session_fast_forward=attr1.fast_forward ? SESSION_FORWARD_TYPE_PERMANENT : SESSION_FORWARD_TYPE_NONE;
-			(*myds)->sess->user_max_connections=attr1.max_connections;
 			if (strcmp(vars1.password, (char *) vars1.pass) == 0) {
 				if (backend_username) {
 					account_details_t acct {
@@ -1902,21 +1892,18 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 
 					if (acct.password) {
 						(*myds)->sess->default_hostgroup=attr1.default_hostgroup;
-						// Free the previously set 'default_schema' by 'GloMyLdapAuth'
+						// Transfer ownership of LDAP plugin's default_schema to the session
 						if ((*myds)->sess->default_schema) {
 							free((*myds)->sess->default_schema);
 						}
-						(*myds)->sess->default_schema=attr1.default_schema; // ownership transferred
-						attr1.default_schema = NULL; // prevent double-free by free_account_details
-						// Free the previously set 'user_attributes' by 'GloMyLdapAuth'
+						(*myds)->sess->default_schema=attr1.default_schema;
+						attr1.default_schema = NULL; // prevent double-free
+						// Transfer ownership of LDAP plugin's attributes to the session
 						if ((*myds)->sess->user_attributes) {
 							free((*myds)->sess->user_attributes);
 						}
-						(*myds)->sess->user_attributes = attr1.attributes; // ownership transferred
-						attr1.attributes = NULL; // prevent double-free by free_account_details
-#ifdef DEBUG
-						proxy_info("Attributes for user %s: %s\n" , acct.username, attr1.attributes);
-#endif
+						(*myds)->sess->user_attributes = attr1.attributes;
+						attr1.attributes = NULL; // prevent double-free
 						(*myds)->sess->schema_locked=attr1.schema_locked;
 						(*myds)->sess->transaction_persistent=attr1.transaction_persistent;
 						(*myds)->sess->session_fast_forward=attr1.fast_forward ? SESSION_FORWARD_TYPE_PERMANENT : SESSION_FORWARD_TYPE_NONE;
@@ -1947,6 +1934,9 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 					proxy_error("Unable to find backend user associated to LDAP user '%s'\n", vars1.user);
 					ret=false;
 				}
+				// Free LDAP-allocated strings if ownership was not transferred to the session
+				if (attr1.default_schema) { free(attr1.default_schema); attr1.default_schema = NULL; }
+				if (attr1.attributes) { free(attr1.attributes); attr1.attributes = NULL; }
 			}
 		}
 	}
