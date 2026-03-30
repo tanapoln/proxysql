@@ -79,15 +79,15 @@ ldap_auth_plugin="/usr/local/lib/proxysql_okta_ldap_auth.dylib"
 Connect to the ProxySQL admin interface and set the variables:
 
 ```sql
-SET ldap_okta_url='ldaps://yourcompany.ldap.okta.com';
-SET ldap_okta_base_dn='dc=yourcompany,dc=com';
-SET ldap_okta_user_dn_format='uid=%s,ou=users,%s';
-SET ldap_okta_cache_ttl=3600;
-SET ldap_okta_bind_timeout_ms=5000;
-SET ldap_okta_enabled=true;
-SET ldap_okta_default_backend_user='okta_shared';
-SET ldap_okta_default_hostgroup=0;
-SET ldap_okta_default_max_connections=1000;
+SET ldap-okta_url='ldaps://yourcompany.ldap.okta.com';
+SET ldap-okta_base_dn='dc=yourcompany,dc=com';
+SET ldap-okta_user_dn_format='uid=%s,ou=users,%s';
+SET ldap-okta_cache_ttl=3600;
+SET ldap-okta_bind_timeout_ms=5000;
+SET ldap-okta_enabled=true;
+SET ldap-okta_default_backend_user='okta_shared';
+SET ldap-okta_default_hostgroup=0;
+SET ldap-okta_default_max_connections=1000;
 
 LOAD LDAP VARIABLES TO RUNTIME;
 SAVE LDAP VARIABLES TO DISK;
@@ -142,20 +142,20 @@ mysql -h proxysql.internal -P 6033 -u bob@company.com -p'his_okta_pass' -D analy
 
 ## Admin Variables Reference
 
-All variables use the `ldap_` prefix when set via the admin interface.
+All variables use the `ldap-` prefix when set via the admin interface.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ldap_okta_url` | `""` | Okta LDAP endpoint (e.g., `ldaps://company.ldap.okta.com`) |
-| `ldap_okta_base_dn` | `""` | Base DN for user lookups |
-| `ldap_okta_user_dn_format` | `uid=%s,ou=users,%s` | DN format string. First `%s` = username, second `%s` = base_dn |
-| `ldap_okta_cache_ttl` | `3600` | Seconds to cache successful auth results |
-| `ldap_okta_bind_timeout_ms` | `5000` | LDAP connection/bind timeout in milliseconds |
-| `ldap_okta_enabled` | `true` | Enable/disable the plugin. When disabled, falls through to standard auth |
-| `ldap_okta_default_backend_user` | `okta_shared` | Backend MySQL user for Okta-authenticated connections |
-| `ldap_okta_default_hostgroup` | `0` | Default hostgroup (overridden by query rules) |
-| `ldap_okta_default_max_connections` | `1000` | Max frontend connections per Okta user |
-| `ldap_okta_starttls` | `false` | Use StartTLS (for `ldap://` URLs; not needed for `ldaps://`) |
+| `ldap-okta_url` | `""` | Okta LDAP endpoint (e.g., `ldaps://company.ldap.okta.com`) |
+| `ldap-okta_base_dn` | `""` | Base DN for user lookups |
+| `ldap-okta_user_dn_format` | `uid=%s,ou=users,%s` | DN format string. First `%s` = username, second `%s` = base_dn |
+| `ldap-okta_cache_ttl` | `3600` | Seconds to cache successful auth results |
+| `ldap-okta_bind_timeout_ms` | `5000` | LDAP connection/bind timeout in milliseconds |
+| `ldap-okta_enabled` | `true` | Enable/disable the plugin. When disabled, falls through to standard auth |
+| `ldap-okta_default_backend_user` | `okta_shared` | Backend MySQL user for Okta-authenticated connections |
+| `ldap-okta_default_hostgroup` | `0` | Default hostgroup (overridden by query rules) |
+| `ldap-okta_default_max_connections` | `1000` | Max frontend connections per Okta user |
+| `ldap-okta_starttls` | `false` | Use StartTLS (for `ldap://` URLs; not needed for `ldaps://`) |
 
 ## Authentication Flow
 
@@ -260,13 +260,13 @@ When an employee leaves:
 2. The cache entry expires after `okta_cache_ttl` seconds (default: 1 hour)
 3. Next connection attempt will fail LDAP bind → access denied
 
-For immediate revocation, set `ldap_okta_cache_ttl=0` temporarily:
+For immediate revocation, set `ldap-okta_cache_ttl=0` temporarily:
 
 ```sql
-SET ldap_okta_cache_ttl=0;
+SET ldap-okta_cache_ttl=0;
 LOAD LDAP VARIABLES TO RUNTIME;
 -- Wait for active connections to close, then restore
-SET ldap_okta_cache_ttl=3600;
+SET ldap-okta_cache_ttl=3600;
 LOAD LDAP VARIABLES TO RUNTIME;
 ```
 
@@ -296,8 +296,8 @@ g++ -std=c++17 -DCXX17 -O0 -ggdb \
 
 | Symptom | Check |
 |---------|-------|
-| "okta_url not configured" in stderr | Set `ldap_okta_url` and `LOAD LDAP VARIABLES TO RUNTIME` |
-| LDAP bind timeout | Increase `ldap_okta_bind_timeout_ms`; verify network path to Okta |
-| All users rejected | Check `ldap_okta_enabled=true`; verify DN format matches Okta's user DN structure |
+| "okta_url not configured" in stderr | Set `ldap-okta_url` and `LOAD LDAP VARIABLES TO RUNTIME` |
+| LDAP bind timeout | Increase `ldap-okta_bind_timeout_ms`; verify network path to Okta |
+| All users rejected | Check `ldap-okta_enabled=true`; verify DN format matches Okta's user DN structure |
 | "Connection refused" after disabling in Okta | Working as intended — wait for cache to expire or set `okta_cache_ttl=0` |
 | Backend auth failure | Ensure `okta_default_backend_user` exists in `mysql_users` with `backend=1` |

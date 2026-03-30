@@ -1121,7 +1121,7 @@ bool is_valid_global_variable(const char *var_name) {
 		return true;
 	} else if (strlen(var_name) > 5 && !strncmp(var_name, "tsdb-", 5) && GloProxyStats && GloProxyStats->has_variable(var_name + 5)) {
 		return true;
-	} else if (strlen(var_name) > 5 && !strncmp(var_name, "ldap_", 5) && GloMyLdapAuth && GloMyLdapAuth->has_variable(var_name + 5)) {
+	} else if (strlen(var_name) > 5 && !strncmp(var_name, "ldap-", 5) && GloMyLdapAuth && GloMyLdapAuth->has_variable(var_name + 5)) {
 		return true;
 	} else if (strlen(var_name) > 13 && !strncmp(var_name, "sqliteserver-", 13) && GloSQLite3Server && GloSQLite3Server->has_variable(var_name + 13)) {
 		return true;
@@ -1865,7 +1865,7 @@ bool admin_handler_command_load_or_save(char *query_no_space, unsigned int query
 			) {
 				proxy_info("Received %s command\n", query_no_space);
 				l_free(*ql,*q);
-				*q=l_strdup("INSERT OR REPLACE INTO main.global_variables SELECT * FROM disk.global_variables WHERE variable_name LIKE 'ldap_%'");
+				*q=l_strdup("INSERT OR REPLACE INTO main.global_variables SELECT * FROM disk.global_variables WHERE variable_name LIKE 'ldap-%'");
 				*ql=strlen(*q)+1;
 				return true;
 			}
@@ -1879,7 +1879,7 @@ bool admin_handler_command_load_or_save(char *query_no_space, unsigned int query
 			) {
 				proxy_info("Received %s command\n", query_no_space);
 				l_free(*ql,*q);
-				*q=l_strdup("INSERT OR REPLACE INTO disk.global_variables SELECT * FROM main.global_variables WHERE variable_name LIKE 'ldap_%'");
+				*q=l_strdup("INSERT OR REPLACE INTO disk.global_variables SELECT * FROM main.global_variables WHERE variable_name LIKE 'ldap-%'");
 				*ql=strlen(*q)+1;
 				return true;
 			}
@@ -4708,7 +4708,7 @@ void admin_session_handler(S* sess, void *_pa, PtrSize_t *pkt) {
 	if (GloMyLdapAuth) {
 		if (query_no_space_length==strlen("SHOW LDAP VARIABLES") && !strncasecmp("SHOW LDAP VARIABLES",query_no_space, query_no_space_length)) {
 			l_free(query_length,query);
-			query=l_strdup("SELECT variable_name AS Variable_name, variable_value AS Value FROM global_variables WHERE variable_name LIKE 'ldap_\%' ORDER BY variable_name");
+			query=l_strdup("SELECT variable_name AS Variable_name, variable_value AS Value FROM global_variables WHERE variable_name LIKE 'ldap-\%' ORDER BY variable_name");
 			query_length=strlen(query)+1;
 			goto __run_query;
 		}

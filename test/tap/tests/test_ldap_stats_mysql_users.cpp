@@ -87,7 +87,7 @@ const uint32_t USER_NUM = 30;
 
 int main(int argc, char** argv) {
 	plan(
-		1 + // Check that 'ldap_max_db_connections' is properly updated
+		1 + // Check that 'ldap-max_db_connections' is properly updated
 		1 + // Check that row count from 'stats_mysql_users' match expected
 		USER_NUM + // Check that actual user conns match expected
 		USER_NUM + // Check that user conn cleanup worked as expected - zero conns
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
 	// Enforce a maximum number of connections that for LDAP users
 	{
 		const string UPD_LDAP_MAX_CONNS_QUERY {
-			"SET ldap_max_db_connections=" + std::to_string(LDAP_MAX_CONNS)
+			"SET ldap-max_db_connections=" + std::to_string(LDAP_MAX_CONNS)
 		};
 
 		MYSQL_QUERY(admin, UPD_LDAP_MAX_CONNS_QUERY.c_str());
@@ -163,7 +163,7 @@ int main(int argc, char** argv) {
 	}
 
 	{
-		MYSQL_QUERY(admin, "SHOW VARIABLES LIKE 'ldap_max_db_connections'");
+		MYSQL_QUERY(admin, "SHOW VARIABLES LIKE 'ldap-max_db_connections'");
 		MYSQL_RES* res = mysql_store_result(admin);
 		MYSQL_ROW row = mysql_fetch_row(res);
 
@@ -306,7 +306,7 @@ int main(int argc, char** argv) {
 		uint32_t USER_NUM = 5;
 
 		string SET_LDAP_MAX_CONNS {};
-		string_format("SET ldap_max_db_connections=%d", SET_LDAP_MAX_CONNS, MAX_CONNS);
+		string_format("SET ldap-max_db_connections=%d", SET_LDAP_MAX_CONNS, MAX_CONNS);
 
 		MYSQL_QUERY(admin, SET_LDAP_MAX_CONNS.c_str());
 		MYSQL_QUERY(admin, "LOAD LDAP VARIABLES TO RUNTIME");

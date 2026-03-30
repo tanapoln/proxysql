@@ -164,21 +164,21 @@ fi
 echo "  Configuring LDAP variables via admin..."
 ldap_ok=true
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SET ldap_okta_url='ldaps://trial-1120298.ldap.okta.com'" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap-okta_url='ldaps://trial-1120298.ldap.okta.com'" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SET ldap_okta_base_dn='dc=trial-1120298,dc=okta,dc=com'" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap-okta_base_dn='dc=trial-1120298,dc=okta,dc=com'" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SET ldap_okta_cache_ttl=3600" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap-okta_cache_ttl=3600" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SET ldap_okta_bind_timeout_ms=10000" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap-okta_bind_timeout_ms=10000" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SET ldap_okta_enabled=true" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap-okta_enabled=true" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SET ldap_okta_default_backend_user='okta_shared'" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap-okta_default_backend_user='okta_shared'" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SET ldap_okta_default_hostgroup=0" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap-okta_default_hostgroup=0" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SET ldap_okta_default_max_connections=1000" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap-okta_default_max_connections=1000" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
     "LOAD LDAP VARIABLES TO RUNTIME" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
@@ -191,7 +191,7 @@ fi
 
 # Verify LDAP variables are set
 result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SELECT variable_value FROM global_variables WHERE variable_name='ldap_okta_url'")
+    "SELECT variable_value FROM global_variables WHERE variable_name='ldap-okta_url'")
 if [[ "$result" == *"trial-1120298.ldap.okta.com"* ]]; then
     pass "ProxySQL admin: LDAP okta_url confirmed"
 else
@@ -199,7 +199,7 @@ else
 fi
 
 result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SELECT variable_value FROM global_variables WHERE variable_name='ldap_okta_enabled'")
+    "SELECT variable_value FROM global_variables WHERE variable_name='ldap-okta_enabled'")
 if [[ "$result" == *"true"* ]]; then
     pass "ProxySQL admin: LDAP enabled confirmed"
 else
@@ -208,7 +208,7 @@ fi
 
 # Verify base_dn is stored correctly (value contains '=' signs that must be preserved)
 result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "SELECT variable_value FROM global_variables WHERE variable_name='ldap_okta_base_dn'")
+    "SELECT variable_value FROM global_variables WHERE variable_name='ldap-okta_base_dn'")
 if [[ "$result" == "dc=trial-1120298,dc=okta,dc=com" ]]; then
     pass "ProxySQL admin: LDAP base_dn preserved (SET with '=' in value)"
 else

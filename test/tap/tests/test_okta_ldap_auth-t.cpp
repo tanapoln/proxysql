@@ -146,15 +146,15 @@ int main(int argc, char** argv) {
 	}
 	ok(var_count >= 9, "At least 9 variables returned (got %d)", var_count);
 
-	// Check that variable names have "ldap_" prefix
+	// Check that variable names have "ldap-" prefix
 	bool has_prefix = true;
 	for (int i = 0; i < var_count; i++) {
-		if (strncmp(varlist[i], "ldap_", 5) != 0) {
+		if (strncmp(varlist[i], "ldap-", 5) != 0) {
 			has_prefix = false;
-			diag("Variable '%s' missing 'ldap_' prefix", varlist[i]);
+			diag("Variable '%s' missing 'ldap-' prefix", varlist[i]);
 		}
 	}
-	ok(has_prefix, "All variable names have 'ldap_' prefix");
+	ok(has_prefix, "All variable names have 'ldap-' prefix");
 
 	// Free variable list
 	for (int i = 0; i < var_count; i++) free(varlist[i]);
@@ -163,38 +163,38 @@ int main(int argc, char** argv) {
 	// ===================================================================
 	// 6. Admin variables — has_variable
 	// ===================================================================
-	ok(plugin->has_variable("ldap_okta_url"), "has_variable('ldap_okta_url') returns true");
-	ok(plugin->has_variable("ldap_okta_cache_ttl"), "has_variable('ldap_okta_cache_ttl') returns true");
+	ok(plugin->has_variable("ldap-okta_url"), "has_variable('ldap-okta_url') returns true");
+	ok(plugin->has_variable("ldap-okta_cache_ttl"), "has_variable('ldap-okta_cache_ttl') returns true");
 	ok(plugin->has_variable("okta_enabled"), "has_variable('okta_enabled') returns true (without prefix)");
-	ok(!plugin->has_variable("ldap_nonexistent"), "has_variable('ldap_nonexistent') returns false");
+	ok(!plugin->has_variable("ldap-nonexistent"), "has_variable('ldap-nonexistent') returns false");
 
 	// ===================================================================
 	// 7. Admin variables — get/set
 	// ===================================================================
 	{
-		char *val = plugin->get_variable((char*)"ldap_okta_cache_ttl");
+		char *val = plugin->get_variable((char*)"ldap-okta_cache_ttl");
 		ok(val != NULL && strcmp(val, "3600") == 0,
 			"Default okta_cache_ttl is '3600' (got '%s')", val ? val : "NULL");
 		if (val) free(val);
 	}
 
 	{
-		bool set_ok = plugin->set_variable((char*)"ldap_okta_url", (char*)"ldaps://test.ldap.okta.com");
-		ok(set_ok, "set_variable('ldap_okta_url', 'ldaps://test.ldap.okta.com') returns true");
+		bool set_ok = plugin->set_variable((char*)"ldap-okta_url", (char*)"ldaps://test.ldap.okta.com");
+		ok(set_ok, "set_variable('ldap-okta_url', 'ldaps://test.ldap.okta.com') returns true");
 
-		char *val = plugin->get_variable((char*)"ldap_okta_url");
+		char *val = plugin->get_variable((char*)"ldap-okta_url");
 		ok(val != NULL && strcmp(val, "ldaps://test.ldap.okta.com") == 0,
 			"get_variable returns updated value '%s'", val ? val : "NULL");
 		if (val) free(val);
 	}
 
 	{
-		bool set_fail = plugin->set_variable((char*)"ldap_nonexistent", (char*)"value");
+		bool set_fail = plugin->set_variable((char*)"ldap-nonexistent", (char*)"value");
 		ok(!set_fail, "set_variable for unknown variable returns false");
 	}
 
 	{
-		char *val = plugin->get_variable((char*)"ldap_okta_default_backend_user");
+		char *val = plugin->get_variable((char*)"ldap-okta_default_backend_user");
 		ok(val != NULL && strcmp(val, "okta_shared") == 0,
 			"Default backend user is 'okta_shared' (got '%s')", val ? val : "NULL");
 		if (val) free(val);
@@ -316,7 +316,7 @@ int main(int argc, char** argv) {
 	// 13. lookup with plugin disabled — should return NULL
 	// ===================================================================
 	{
-		plugin->set_variable((char*)"ldap_okta_enabled", (char*)"false");
+		plugin->set_variable((char*)"ldap-okta_enabled", (char*)"false");
 
 		bool use_ssl = false;
 		int hg = -1;
@@ -336,7 +336,7 @@ int main(int argc, char** argv) {
 		ok(result == NULL, "lookup() returns NULL when plugin is disabled");
 
 		// Re-enable
-		plugin->set_variable((char*)"ldap_okta_enabled", (char*)"true");
+		plugin->set_variable((char*)"ldap-okta_enabled", (char*)"true");
 	}
 
 	// ===================================================================
