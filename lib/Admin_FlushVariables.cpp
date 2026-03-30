@@ -164,8 +164,8 @@ extern char * binary_sha1;
 
 extern int ProxySQL_create_or_load_TLS(bool bootstrap, std::string& msg);
 
-bool ProxySQL_Admin::flush_GENERIC_variables__retrieve__database_to_runtime(const std::string& modname, char* &error, int& cols, int& affected_rows, SQLite3_result* &resultset) {
-	string q = "SELECT substr(variable_name," + to_string(modname.length()+2) + ") vn, variable_value FROM global_variables WHERE variable_name LIKE '" + modname + "-%'";
+bool ProxySQL_Admin::flush_GENERIC_variables__retrieve__database_to_runtime(const std::string& modname, char* &error, int& cols, int& affected_rows, SQLite3_result* &resultset, const std::string& sep) {
+	string q = "SELECT substr(variable_name," + to_string(modname.length()+1+sep.length()) + ") vn, variable_value FROM global_variables WHERE variable_name LIKE '" + modname + sep + "%'";
 	admindb->execute_statement(q.c_str(), &error , &cols , &affected_rows , &resultset);
 	if (error) {
 		proxy_error("Error on %s : %s\n", q.c_str(), error);
@@ -382,13 +382,13 @@ void ProxySQL_Admin::flush_pgsql_variables___runtime_to_database(SQLite3DB* db, 
 	free(varnames);
 }
 
-void ProxySQL_Admin::flush_GENERIC_variables__checksum__database_to_runtime(const string& modname, const string& checksum, const time_t epoch) {
+void ProxySQL_Admin::flush_GENERIC_variables__checksum__database_to_runtime(const string& modname, const string& checksum, const time_t epoch, const std::string& sep) {
 	char *error=NULL;
 	int cols=0;
 	int affected_rows=0;
 	SQLite3_result *resultset=NULL;
 	std::string q;
-	q="SELECT variable_name, variable_value FROM runtime_global_variables WHERE variable_name LIKE '" + modname + "-\%' ";
+	q="SELECT variable_name, variable_value FROM runtime_global_variables WHERE variable_name LIKE '" + modname + sep + "\%' ";
 	if (modname == "mysql") {
 		q += " AND variable_name NOT IN ('mysql-threads')";
 		if (GloVars.cluster_sync_interfaces == false) {
@@ -1229,7 +1229,7 @@ void ProxySQL_Admin::flush_ldap_variables___database_to_runtime(SQLite3DB *db, b
 	int cols=0;
 	int affected_rows=0;
 	SQLite3_result *resultset=NULL;
-	if (flush_GENERIC_variables__retrieve__database_to_runtime("ldap", error, cols, affected_rows, resultset) == true) {
+	if (flush_GENERIC_variables__retrieve__database_to_runtime("ldap", error, cols, affected_rows, resultset, "_") == true) {
 		GloMyLdapAuth->wrlock();
 		flush_GENERIC_variables__process__database_to_runtime("ldap", db, resultset, false, replace, {}, {}, {}, {});
 		GloMyLdapAuth->wrunlock();
@@ -1239,7 +1239,7 @@ void ProxySQL_Admin::flush_ldap_variables___database_to_runtime(SQLite3DB *db, b
 			pthread_mutex_lock(&GloVars.checksum_mutex);
 			// generate checksum for cluster
 			flush_ldap_variables___runtime_to_database(admindb, false, false, false, true);
-			flush_GENERIC_variables__checksum__database_to_runtime("ldap", checksum, epoch);
+			flush_GENERIC_variables__checksum__database_to_runtime("ldap", checksum, epoch, "_");
 			pthread_mutex_unlock(&GloVars.checksum_mutex);
 		}
 	}
@@ -1256,7 +1256,7 @@ void ProxySQL_Admin::flush_ldap_variables___runtime_to_database(SQLite3DB *db, b
 	  int cols=0;
 	  int affected_rows=0;
 	  SQLite3_result *resultset=NULL;
-	  char *q=(char *)"SELECT COUNT(*) FROM global_variables WHERE variable_name LIKE 'ldap-%'";
+	  char *q=(char *)"SELECT COUNT(*) FROM global_variables WHERE variable_name LIKE 'ldap_%'";
 	  db->execute_statement(q, &error , &cols , &affected_rows , &resultset);
 		int matching_rows=0;
 		if (error) {
@@ -1276,17 +1276,17 @@ void ProxySQL_Admin::flush_ldap_variables___runtime_to_database(SQLite3DB *db, b
 	}
 	if (del) {
 		proxy_debug(PROXY_DEBUG_ADMIN, 4, "Deleting LDAP variables from global_variables\n");
-		db->execute("DELETE FROM global_variables WHERE variable_name LIKE 'ldap-%'");
+		db->execute("DELETE FROM global_variables WHERE variable_name LIKE 'ldap_%'");
 	}
 	if (runtime) {
-		db->execute("DELETE FROM runtime_global_variables WHERE variable_name LIKE 'ldap-%'");
+		db->execute("DELETE FROM runtime_global_variables WHERE variable_name LIKE 'ldap_%'");
 	}
 	char *a;
-	char *b=(char *)"INSERT INTO runtime_global_variables(variable_name, variable_value) VALUES(\"ldap-%s\",\"%s\")";
+	char *b=(char *)"INSERT INTO runtime_global_variables(variable_name, variable_value) VALUES(\"ldap_%s\",\"%s\")";
   if (replace) {
-    a=(char *)"REPLACE INTO global_variables(variable_name, variable_value) VALUES(\"ldap-%s\",\"%s\")";
+    a=(char *)"REPLACE INTO global_variables(variable_name, variable_value) VALUES(\"ldap_%s\",\"%s\")";
   } else {
-    a=(char *)"INSERT OR IGNORE INTO global_variables(variable_name, variable_value) VALUES(\"ldap-%s\",\"%s\")";
+    a=(char *)"INSERT OR IGNORE INTO global_variables(variable_name, variable_value) VALUES(\"ldap_%s\",\"%s\")";
   }
 	GloMyLdapAuth->wrlock();
 	char **varnames=GloMyLdapAuth->get_variables_list();

@@ -86,9 +86,9 @@ sleep 3
 section "Phase 1: Configure LDAP + whitelist rules"
 # ---------------------------------------------------------------------------
 echo "  Configuring LDAP..."
-run_admin "SET ldap-okta_url='ldaps://trial-1120298.ldap.okta.com'" >/dev/null
-run_admin "UPDATE global_variables SET variable_value='dc=trial-1120298,dc=okta,dc=com' WHERE variable_name='ldap-okta_base_dn'" >/dev/null
-run_admin "SET ldap-okta_bind_timeout_ms=10000" >/dev/null
+run_admin "SET ldap_okta_url='ldaps://trial-1120298.ldap.okta.com'" >/dev/null
+run_admin "UPDATE global_variables SET variable_value='dc=trial-1120298,dc=okta,dc=com' WHERE variable_name='ldap_okta_base_dn'" >/dev/null
+run_admin "SET ldap_okta_bind_timeout_ms=10000" >/dev/null
 run_admin "LOAD LDAP VARIABLES TO RUNTIME" >/dev/null
 
 echo "  Configuring whitelist query rules..."

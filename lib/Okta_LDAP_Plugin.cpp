@@ -452,7 +452,7 @@ char** Okta_LDAP_Plugin::get_variables_list() {
 	size_t count = var_descriptors.size();
 	char **list = (char **)malloc(sizeof(char *) * (count + 1));
 	for (size_t i = 0; i < count; i++) {
-		// Return bare names — the admin framework adds the module prefix (e.g. "ldap-")
+		// Return bare names — the admin framework adds the module prefix (e.g. "ldap_")
 		list[i] = strdup(var_descriptors[i].name);
 	}
 	list[count] = NULL;

@@ -5877,7 +5877,7 @@ void ProxySQL_Admin::flush_admin_variables__from_memory_to_disk() {
 void ProxySQL_Admin::flush_ldap_variables__from_memory_to_disk() {
 	admindb->wrlock();
 	admindb->execute("PRAGMA foreign_keys = OFF");
-	admindb->execute("INSERT OR REPLACE INTO disk.global_variables SELECT * FROM main.global_variables WHERE variable_name LIKE 'ldap-%'");
+	admindb->execute("INSERT OR REPLACE INTO disk.global_variables SELECT * FROM main.global_variables WHERE variable_name LIKE 'ldap_%'");
 	admindb->execute("PRAGMA foreign_keys = ON");
 	admindb->wrunlock();
 }
