@@ -1920,6 +1920,69 @@ bool admin_handler_command_load_or_save(char *query_no_space, unsigned int query
 		}
 	}
 
+	// LOAD/SAVE MYSQL LDAP MAPPING
+	if (GloMyLdapAuth) {
+		if ((query_no_space_length > 25) && (
+			(!strncasecmp("SAVE MYSQL LDAP MAPPING ", query_no_space, 24)) ||
+			(!strncasecmp("LOAD MYSQL LDAP MAPPING ", query_no_space, 24))
+		)) {
+			// LOAD FROM DISK → MEMORY
+			if (
+				(query_no_space_length==strlen("LOAD MYSQL LDAP MAPPING FROM DISK") && !strncasecmp("LOAD MYSQL LDAP MAPPING FROM DISK",query_no_space, query_no_space_length))
+			) {
+				proxy_info("Received %s command\n", query_no_space);
+				ProxySQL_Admin *SPA=(ProxySQL_Admin *)pa;
+				SPA->flush_mysql_ldap_mapping__from_disk_to_memory();
+				SPA->send_ok_msg_to_client(sess, NULL, 0, query_no_space);
+				return false;
+			}
+			// SAVE TO DISK
+			if (
+				(query_no_space_length==strlen("SAVE MYSQL LDAP MAPPING TO DISK") && !strncasecmp("SAVE MYSQL LDAP MAPPING TO DISK",query_no_space, query_no_space_length))
+			) {
+				proxy_info("Received %s command\n", query_no_space);
+				ProxySQL_Admin *SPA=(ProxySQL_Admin *)pa;
+				SPA->flush_mysql_ldap_mapping__from_memory_to_disk();
+				SPA->send_ok_msg_to_client(sess, NULL, 0, query_no_space);
+				return false;
+			}
+			// LOAD TO RUNTIME
+			if (
+				(query_no_space_length==strlen("LOAD MYSQL LDAP MAPPING TO RUNTIME") && !strncasecmp("LOAD MYSQL LDAP MAPPING TO RUNTIME",query_no_space, query_no_space_length))
+				||
+				(query_no_space_length==strlen("LOAD MYSQL LDAP MAPPING TO RUN") && !strncasecmp("LOAD MYSQL LDAP MAPPING TO RUN",query_no_space, query_no_space_length))
+				||
+				(query_no_space_length==strlen("LOAD MYSQL LDAP MAPPING FROM MEMORY") && !strncasecmp("LOAD MYSQL LDAP MAPPING FROM MEMORY",query_no_space, query_no_space_length))
+				||
+				(query_no_space_length==strlen("LOAD MYSQL LDAP MAPPING FROM MEM") && !strncasecmp("LOAD MYSQL LDAP MAPPING FROM MEM",query_no_space, query_no_space_length))
+			) {
+				proxy_info("Received %s command\n", query_no_space);
+				ProxySQL_Admin *SPA=(ProxySQL_Admin *)pa;
+				SPA->load_mysql_ldap_mapping_to_runtime();
+				proxy_debug(PROXY_DEBUG_ADMIN, 4, "Loaded mysql ldap mapping to RUNTIME\n");
+				SPA->send_ok_msg_to_client(sess, NULL, 0, query_no_space);
+				return false;
+			}
+			// SAVE FROM RUNTIME
+			if (
+				(query_no_space_length==strlen("SAVE MYSQL LDAP MAPPING FROM RUNTIME") && !strncasecmp("SAVE MYSQL LDAP MAPPING FROM RUNTIME",query_no_space, query_no_space_length))
+				||
+				(query_no_space_length==strlen("SAVE MYSQL LDAP MAPPING FROM RUN") && !strncasecmp("SAVE MYSQL LDAP MAPPING FROM RUN",query_no_space, query_no_space_length))
+				||
+				(query_no_space_length==strlen("SAVE MYSQL LDAP MAPPING TO MEMORY") && !strncasecmp("SAVE MYSQL LDAP MAPPING TO MEMORY",query_no_space, query_no_space_length))
+				||
+				(query_no_space_length==strlen("SAVE MYSQL LDAP MAPPING TO MEM") && !strncasecmp("SAVE MYSQL LDAP MAPPING TO MEM",query_no_space, query_no_space_length))
+			) {
+				proxy_info("Received %s command\n", query_no_space);
+				ProxySQL_Admin *SPA=(ProxySQL_Admin *)pa;
+				SPA->save_mysql_ldap_mapping_runtime_to_database(true);
+				proxy_debug(PROXY_DEBUG_ADMIN, 4, "Saved mysql ldap mapping from RUNTIME\n");
+				SPA->send_ok_msg_to_client(sess, NULL, 0, query_no_space);
+				return false;
+			}
+		}
+	}
+
 		if ((query_no_space_length > 21) && ((!strncasecmp("SAVE MYSQL VARIABLES ", query_no_space, 21)) || (!strncasecmp("LOAD MYSQL VARIABLES ", query_no_space, 21)) ||
 			(!strncasecmp("SAVE PGSQL VARIABLES ", query_no_space, 21)) || (!strncasecmp("LOAD PGSQL VARIABLES ", query_no_space, 21)) ||
 			(!strncasecmp("SAVE GENAI VARIABLES ", query_no_space, 21)) || (!strncasecmp("LOAD GENAI VARIABLES ", query_no_space, 21)) ||

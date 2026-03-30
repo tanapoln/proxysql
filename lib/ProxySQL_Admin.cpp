@@ -5874,6 +5874,28 @@ void ProxySQL_Admin::flush_admin_variables__from_memory_to_disk() {
 	admindb->wrunlock();
 }
 
+void ProxySQL_Admin::load_mysql_ldap_mapping_to_runtime() {
+	__add_active_users_ldap();
+}
+
+void ProxySQL_Admin::flush_mysql_ldap_mapping__from_disk_to_memory() {
+	admindb->wrlock();
+	admindb->execute("PRAGMA foreign_keys = OFF");
+	admindb->execute("DELETE FROM main.mysql_ldap_mapping");
+	admindb->execute("INSERT INTO main.mysql_ldap_mapping SELECT * FROM disk.mysql_ldap_mapping");
+	admindb->execute("PRAGMA foreign_keys = ON");
+	admindb->wrunlock();
+}
+
+void ProxySQL_Admin::flush_mysql_ldap_mapping__from_memory_to_disk() {
+	admindb->wrlock();
+	admindb->execute("PRAGMA foreign_keys = OFF");
+	admindb->execute("DELETE FROM disk.mysql_ldap_mapping");
+	admindb->execute("INSERT INTO disk.mysql_ldap_mapping SELECT * FROM main.mysql_ldap_mapping");
+	admindb->execute("PRAGMA foreign_keys = ON");
+	admindb->wrunlock();
+}
+
 void ProxySQL_Admin::flush_ldap_variables__from_memory_to_disk() {
 	admindb->wrlock();
 	admindb->execute("PRAGMA foreign_keys = OFF");

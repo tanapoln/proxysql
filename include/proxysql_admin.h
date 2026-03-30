@@ -699,6 +699,9 @@ class ProxySQL_Admin {
 //	void flush_admin_variables__from_disk_to_memory(); // commented in 2.3 because unused
 	void flush_admin_variables__from_memory_to_disk();
 	void flush_ldap_variables__from_memory_to_disk();
+	void flush_mysql_ldap_mapping__from_disk_to_memory();
+	void flush_mysql_ldap_mapping__from_memory_to_disk();
+	void load_mysql_ldap_mapping_to_runtime();
 	void load_mysql_servers_to_runtime(const incoming_servers_t& incoming_servers = {}, const runtime_mysql_servers_checksum_t& peer_runtime_mysql_server = {},
 		const mysql_servers_v2_checksum_t& peer_mysql_server_v2 = {});
 	void save_mysql_servers_from_runtime();

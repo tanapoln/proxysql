@@ -326,6 +326,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "Phase 7: LOAD/SAVE MYSQL LDAP MAPPING commands"
+# ---------------------------------------------------------------------------
+
+# Helper for admin commands in this phase
+run_admin() {
+    local output rc=0
+    output=$(mysql -h "$PROXYSQL_HOST" -P "$PROXYSQL_ADMIN_PORT" -u "$ADMIN_USER" -p"$ADMIN_PASS" \
+        --connect-timeout=10 -N -B -e "$1" 2>&1) || rc=$?
+    echo "$output" | grep -v 'mysql: \[Warning\]' || true
+    return ${rc}
+}
+
+# Test 1: Insert a mapping row and LOAD TO RUNTIME
+run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
+run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (100, '${OKTA_USER}', 'okta_shared', 'test mapping')" >/dev/null 2>&1
+result=$(run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" 2>&1)
+rc=$?
+if [[ $rc -eq 0 ]] && [[ "$result" != *"ERROR"* ]]; then
+    pass "LDAP mapping: LOAD MYSQL LDAP MAPPING TO RUNTIME succeeds"
+else
+    fail "LDAP mapping: LOAD MYSQL LDAP MAPPING TO RUNTIME failed" "$result"
+fi
+
+# Test 2: SAVE FROM RUNTIME — dump runtime mapping back to memory table
+result=$(run_admin "SAVE MYSQL LDAP MAPPING FROM RUNTIME" 2>&1)
+rc=$?
+if [[ $rc -eq 0 ]] && [[ "$result" != *"ERROR"* ]]; then
+    pass "LDAP mapping: SAVE MYSQL LDAP MAPPING FROM RUNTIME succeeds"
+else
+    fail "LDAP mapping: SAVE MYSQL LDAP MAPPING FROM RUNTIME failed" "$result"
+fi
+
+# Test 3: Verify the mapping row survived the round-trip (memory → runtime → memory)
+result=$(run_admin "SELECT frontend_entity FROM runtime_mysql_ldap_mapping WHERE priority=100")
+if [[ "$result" == *"${OKTA_USER}"* ]]; then
+    pass "LDAP mapping: runtime table has the inserted mapping"
+else
+    fail "LDAP mapping: runtime table missing the mapping" "$result"
+fi
+
+# Test 4: SAVE TO DISK
+result=$(run_admin "SAVE MYSQL LDAP MAPPING TO DISK" 2>&1)
+rc=$?
+if [[ $rc -eq 0 ]] && [[ "$result" != *"ERROR"* ]]; then
+    pass "LDAP mapping: SAVE MYSQL LDAP MAPPING TO DISK succeeds"
+else
+    fail "LDAP mapping: SAVE MYSQL LDAP MAPPING TO DISK failed" "$result"
+fi
+
+# Test 5: Delete from memory, then LOAD FROM DISK — row should reappear
+run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
+count_before=$(run_admin "SELECT COUNT(*) FROM mysql_ldap_mapping")
+result=$(run_admin "LOAD MYSQL LDAP MAPPING FROM DISK" 2>&1)
+rc=$?
+count_after=$(run_admin "SELECT COUNT(*) FROM mysql_ldap_mapping")
+if [[ $rc -eq 0 ]] && [[ "$result" != *"ERROR"* ]] && [[ "$count_before" == "0" ]] && [[ "$count_after" -ge 1 ]]; then
+    pass "LDAP mapping: LOAD FROM DISK restores mapping (0 → ${count_after} rows)"
+else
+    fail "LDAP mapping: LOAD FROM DISK failed (before=$count_before after=$count_after)" "$result"
+fi
+
+# Test 6: Verify the restored row has correct content
+result=$(run_admin "SELECT frontend_entity FROM mysql_ldap_mapping WHERE priority=100")
+if [[ "$result" == *"${OKTA_USER}"* ]]; then
+    pass "LDAP mapping: disk round-trip preserved mapping content"
+else
+    fail "LDAP mapping: disk round-trip lost mapping content" "$result"
+fi
+
+# Clean up — reload mapping to runtime after tests
+run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
 section "Results"
 # ---------------------------------------------------------------------------
 echo ""
