@@ -11,7 +11,11 @@ COPY include/Okta_LDAP_Plugin.h \
 	include/MySQL_LDAP_Authentication.hpp \
 	include/sqlite3db.h \
 	/src/include/
-COPY deps/sqlite3/sqlite-amalgamation-*/sqlite3.h /src/deps/sqlite3/sqlite3/
+COPY deps/sqlite3/sqlite-amalgamation-*.tar.gz /tmp/
+RUN tar -xzf /tmp/sqlite-amalgamation-*.tar.gz -C /tmp && \
+	mkdir -p /src/deps/sqlite3/sqlite3 && \
+	cp /tmp/sqlite-amalgamation-*/sqlite3.h /src/deps/sqlite3/sqlite3/ && \
+	rm -rf /tmp/sqlite-amalgamation-*
 COPY lib/Okta_LDAP_Plugin.cpp /src/lib/
 
 RUN g++ -std=c++17 -fPIC -O2 -Wall \
