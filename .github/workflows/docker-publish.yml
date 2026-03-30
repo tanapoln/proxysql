@@ -1,12 +1,13 @@
 name: Docker Publish
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI-package-build]
+    types: [completed]
     branches:
-    - 'v[0-9].[0-9x]+.?[0-9xy]?[0-9]?'
-    paths-ignore:
-    - '.github/**'
-    - '**.md'
+    - 'v[0-9]+.x'
+    - 'v[0-9]+.[0-9]+'
+    - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       release_tag:
@@ -17,7 +18,7 @@ on:
         required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || github.ref_name }}
   cancel-in-progress: true
 
 env:
@@ -27,6 +28,9 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: read
       packages: write
@@ -34,6 +38,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.workflow_run.head_branch || github.ref }}
 
     - name: Set build args
       id: args
@@ -45,7 +51,7 @@ jobs:
           echo "release_tag=${INPUT_RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "deb_version=${INPUT_DEB_VERSION}" >> "$GITHUB_OUTPUT"
         else
-          BRANCH="${{ github.ref_name }}"
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
           echo "release_tag=${BRANCH}-head" >> "$GITHUB_OUTPUT"
         fi
 
@@ -55,7 +61,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        BRANCH="${{ github.ref_name }}"
+        BRANCH="${{ github.event.workflow_run.head_branch }}"
         VERS=$(gh api repos/${{ github.repository }}/git/refs/tags/${BRANCH#v} | jq -r '.[-1].ref' | sed -e 's|refs/tags/||g')
         HASH=$(gh api repos/${{ github.repository }}/git/refs/heads/${BRANCH} | jq -r '.object.sha' | cut -c-7)
         CMTS=$(gh api repos/${{ github.repository }}/compare/${VERS}...${BRANCH} | jq -r '.ahead_by')
@@ -105,7 +111,7 @@ jobs:
         tags: |
           type=raw,value=${{ steps.final.outputs.deb_version }}-debian13
           type=raw,value=latest,enable={{is_default_branch}}
-          type=ref,event=branch
+          type=raw,value=${{ github.event.workflow_run.head_branch || github.ref_name }}
           type=sha
 
     - name: Build and push Docker image

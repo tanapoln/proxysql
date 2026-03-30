@@ -35,16 +35,19 @@ services:
       retries: 30
 
   proxysql:
-    build:
-      context: ../..
-      dockerfile: docker/okta-ldap/Dockerfile
+    # build:
+      # context: ../..
+      # dockerfile: docker/okta-ldap/Dockerfile
+      # dockerfile: test/system-test/okta-ldap/Dockerfile
+    image: ghcr.io/tanapoln/proxysql:v3.0
     ports:
       - "6032:6032"
       - "6033:6033"
       - "6132:6132"
       - "6133:6133"
     volumes:
-      - ./proxysql.cnf:/etc/proxysql/proxysql.cnf
+      - ./proxysql.cnf:/etc/proxysql/proxysql.cnf:ro
+      - proxysql-data:/var/lib/proxysql
     depends_on:
       mysql:
         condition: service_healthy
@@ -55,4 +58,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
-    command: ["proxysql", "--initial", "-f", "-c", "/etc/proxysql/proxysql.cnf", "-D", "/var/lib/proxysql"]
+    command: ["proxysql", "-f", "-c", "/etc/proxysql/proxysql.cnf", "-D", "/var/lib/proxysql"]
+
+volumes:
+  proxysql-data:
