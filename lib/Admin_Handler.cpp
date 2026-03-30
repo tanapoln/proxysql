@@ -1157,11 +1157,22 @@ bool admin_handler_command_set(char *query_no_space, unsigned int query_no_space
 			}
 		}
 	}
-	// Get a pointer to the beginnig of var=value entry and split to get var name and value
+	// Get a pointer to the beginning of var=value entry and split to get var name and value.
+	// Use strchr instead of c_split_2 to split only at the FIRST '=' — values may contain
+	// '=' characters (e.g. LDAP base_dn 'dc=example,dc=okta,dc=com').
 	char *set_entry = query_no_space + strlen("SET ");
 	char *untrimmed_var_name=NULL;
 	char *var_value=NULL;
-	c_split_2(set_entry, "=", &untrimmed_var_name, &var_value);
+	char *eq_pos = strchr(set_entry, '=');
+	if (eq_pos) {
+		untrimmed_var_name = (char *)malloc(eq_pos - set_entry + 1);
+		memcpy(untrimmed_var_name, set_entry, eq_pos - set_entry);
+		untrimmed_var_name[eq_pos - set_entry] = '\0';
+		var_value = strdup(eq_pos + 1);
+	} else {
+		untrimmed_var_name = strdup(set_entry);
+		var_value = strdup("");
+	}
 
 	// Trim spaces from var name to allow writing like 'var = value'
 	char *var_name = trim_spaces_in_place(untrimmed_var_name);

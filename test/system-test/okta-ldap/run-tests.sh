@@ -161,14 +161,12 @@ else
 fi
 
 # Configure LDAP variables via admin interface
-# NOTE: ProxySQL admin SET parser chokes on values with commas, so we use
-# UPDATE global_variables for base_dn. user_dn_format uses the default.
 echo "  Configuring LDAP variables via admin..."
 ldap_ok=true
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
     "SET ldap_okta_url='ldaps://trial-1120298.ldap.okta.com'" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
-    "UPDATE global_variables SET variable_value='dc=trial-1120298,dc=okta,dc=com' WHERE variable_name='ldap_okta_base_dn'" >/dev/null 2>&1 || ldap_ok=false
+    "SET ldap_okta_base_dn='dc=trial-1120298,dc=okta,dc=com'" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
     "SET ldap_okta_cache_ttl=3600" >/dev/null 2>&1 || ldap_ok=false
 run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
@@ -206,6 +204,15 @@ if [[ "$result" == *"true"* ]]; then
     pass "ProxySQL admin: LDAP enabled confirmed"
 else
     fail "ProxySQL admin: LDAP not enabled" "$result"
+fi
+
+# Verify base_dn is stored correctly (value contains '=' signs that must be preserved)
+result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_ADMIN_PORT" "$ADMIN_USER" "$ADMIN_PASS" "" \
+    "SELECT variable_value FROM global_variables WHERE variable_name='ldap_okta_base_dn'")
+if [[ "$result" == "dc=trial-1120298,dc=okta,dc=com" ]]; then
+    pass "ProxySQL admin: LDAP base_dn preserved (SET with '=' in value)"
+else
+    fail "ProxySQL admin: LDAP base_dn corrupted or missing" "$result"
 fi
 
 # Verify MySQL backend server is registered
