@@ -1,0 +1,124 @@
+name: Docker Publish
+
+on:
+  push:
+    branches:
+    - 'v[0-9].[0-9x]+.?[0-9xy]?[0-9]?'
+    paths-ignore:
+    - '.github/**'
+    - '**.md'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'GitHub release tag to download .deb from (e.g. v3.0-head)'
+        required: true
+      deb_version:
+        description: 'ProxySQL .deb version (e.g. 3.0.6)'
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set build args
+      id: args
+      env:
+        INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        INPUT_DEB_VERSION: ${{ github.event.inputs.deb_version }}
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "release_tag=${INPUT_RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "deb_version=${INPUT_DEB_VERSION}" >> "$GITHUB_OUTPUT"
+        else
+          BRANCH="${{ github.ref_name }}"
+          echo "release_tag=${BRANCH}-head" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Git describe
+      if: github.event_name != 'workflow_dispatch'
+      id: gitdescribe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        BRANCH="${{ github.ref_name }}"
+        VERS=$(gh api repos/${{ github.repository }}/git/refs/tags/${BRANCH#v} | jq -r '.[-1].ref' | sed -e 's|refs/tags/||g')
+        HASH=$(gh api repos/${{ github.repository }}/git/refs/heads/${BRANCH} | jq -r '.object.sha' | cut -c-7)
+        CMTS=$(gh api repos/${{ github.repository }}/compare/${VERS}...${BRANCH} | jq -r '.ahead_by')
+        if [ -z "$VERS" ] || [ "$VERS" = "null" ]; then
+          echo "::error::Failed to resolve version tag for branch ${BRANCH}"
+          exit 1
+        fi
+        echo "GIT_VERSION=${VERS}-${CMTS}-g${HASH}" >> $GITHUB_ENV
+        echo "gitdescribe=${VERS}-${CMTS}-g${HASH}" >> $GITHUB_OUTPUT
+
+    - name: Derive DEB_VERSION
+      if: github.event_name != 'workflow_dispatch'
+      id: debversion
+      run: |
+        GIT_DESC="${{ steps.gitdescribe.outputs.gitdescribe }}"
+        DEB_VERSION=$(echo "${GIT_DESC}" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+        if [ -z "${DEB_VERSION}" ]; then
+          echo "::error::Failed to extract DEB_VERSION from git describe: ${GIT_DESC}"
+          exit 1
+        fi
+        echo "deb_version=${DEB_VERSION}" >> "$GITHUB_OUTPUT"
+
+    - name: Log in to GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Resolve final args
+      id: final
+      run: |
+        echo "release_tag=${{ steps.args.outputs.release_tag }}" >> "$GITHUB_OUTPUT"
+        echo "deb_version=${{ steps.args.outputs.deb_version || steps.debversion.outputs.deb_version }}" >> "$GITHUB_OUTPUT"
+
+    - name: Extract Docker metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=raw,value=${{ steps.final.outputs.deb_version }}-debian13
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=ref,event=branch
+          type=sha
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: docker/okta-ldap/Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          RELEASE_TAG=${{ steps.final.outputs.release_tag }}
+          DEB_VERSION=${{ steps.final.outputs.deb_version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
