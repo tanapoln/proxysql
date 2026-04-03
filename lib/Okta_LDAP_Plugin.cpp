@@ -533,8 +533,8 @@ SQLite3_result* Okta_LDAP_Plugin::dump_table_mysql_ldap_mapping() {
 }
 
 SQLite3_result* Okta_LDAP_Plugin::dump_table_pgsql_ldap_mapping() {
-	// Not applicable for this plugin
-	return new SQLite3_result(4);
+	// Shared mapping — same data as mysql_ldap_mapping
+	return dump_table_mysql_ldap_mapping();
 }
 
 uint64_t Okta_LDAP_Plugin::get_ldap_mapping_runtime_checksum() {

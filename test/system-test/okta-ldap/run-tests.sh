@@ -326,10 +326,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-section "Phase 7: LOAD/SAVE MYSQL LDAP MAPPING commands"
+section "Phase 7: ProxySQL Okta LDAP authentication via PgSQL proxy"
 # ---------------------------------------------------------------------------
 
-# Helper for admin commands in this phase
+# Helper for admin commands
 run_admin() {
     local output rc=0
     output=$(mysql -h "$PROXYSQL_HOST" -P "$PROXYSQL_ADMIN_PORT" -u "$ADMIN_USER" -p"$ADMIN_PASS" \
@@ -337,6 +337,57 @@ run_admin() {
     echo "$output" | grep -v 'mysql: \[Warning\]' || true
     return ${rc}
 }
+
+# Configure pgsql LDAP: map LDAP user to 'okta_pgsql' backend user (distinct from MySQL's okta_shared)
+echo "  Setting up PgSQL LDAP mapping..."
+run_admin "DELETE FROM pgsql_ldap_mapping" >/dev/null 2>&1
+run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (100, '${OKTA_USER}', 'okta_pgsql', 'pgsql ldap test')" >/dev/null 2>&1
+run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+
+# Test 1: PgSQL LDAP auth should succeed with valid Okta credentials
+echo "  Attempting PgSQL LDAP auth with Okta user: ${OKTA_USER}"
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "testdb" "SELECT 1" 2>&1 || true)
+if [[ "$result" == *"1"* ]] && [[ "$result" != *"FATAL"* ]]; then
+    pass "PgSQL LDAP auth: valid user can authenticate and query"
+else
+    fail "PgSQL LDAP auth: valid user authentication failed" "$result"
+fi
+
+# Test 2: PgSQL LDAP auth — query actual backend table (verifies correct hostgroup routing)
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "testdb" "SELECT name FROM test_table LIMIT 1" 2>&1 || true)
+if [[ "$result" == *"pgsql_test_row"* ]]; then
+    pass "PgSQL LDAP auth: query routed to correct PgSQL backend hostgroup"
+else
+    fail "PgSQL LDAP auth: backend query failed (wrong hostgroup or routing error)" "$result"
+fi
+
+# Test 3: PgSQL LDAP auth should fail with wrong password
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$OKTA_USER" "WrongPassword123!" "testdb" "SELECT 1" 2>&1 || true)
+if [[ "$result" == *"FATAL"* ]] || [[ "$result" == *"password authentication failed"* ]]; then
+    pass "PgSQL LDAP auth: wrong password correctly rejected"
+else
+    fail "PgSQL LDAP auth: wrong password was NOT rejected" "$result"
+fi
+
+# Test 3: PgSQL LDAP auth should fail with non-existent user
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "nonexistent@example.com" "anypass" "testdb" "SELECT 1" 2>&1 || true)
+if [[ "$result" == *"FATAL"* ]] || [[ "$result" == *"User not found"* ]] || [[ "$result" == *"password authentication failed"* ]]; then
+    pass "PgSQL LDAP auth: non-existent user correctly rejected"
+else
+    fail "PgSQL LDAP auth: non-existent user was NOT rejected" "$result"
+fi
+
+# Test 4: Standard PgSQL user still works after LDAP config
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$STD_PGSQL_USER" "$STD_PGSQL_PASS" "testdb" "SELECT name FROM test_table LIMIT 1")
+if [[ "$result" == *"pgsql_test_row"* ]]; then
+    pass "PgSQL LDAP auth: standard user still works after LDAP setup"
+else
+    fail "PgSQL LDAP auth: standard user broken after LDAP setup" "$result"
+fi
+
+# ---------------------------------------------------------------------------
+section "Phase 8: LOAD/SAVE MYSQL LDAP MAPPING commands"
+# ---------------------------------------------------------------------------
 
 # Test 1: Insert a mapping row and LOAD TO RUNTIME
 run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
@@ -397,6 +448,209 @@ fi
 
 # Clean up — reload mapping to runtime after tests
 run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+section "Phase 9: LDAP mapping @everyone catch-all"
+# ---------------------------------------------------------------------------
+
+# --- MySQL @everyone ---
+echo "  Testing MySQL LDAP mapping with @everyone catch-all..."
+
+# Replace user-specific mapping with @everyone
+run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
+run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (999, '@everyone', 'okta_shared', 'catch-all')" >/dev/null 2>&1
+run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+
+# Verify @everyone is in runtime table
+result=$(run_admin "SELECT frontend_entity FROM runtime_mysql_ldap_mapping WHERE frontend_entity='@everyone'")
+if [[ "$result" == *"@everyone"* ]]; then
+    pass "MySQL @everyone: mapping loaded to runtime"
+else
+    fail "MySQL @everyone: mapping not in runtime" "$result"
+fi
+
+# Authenticate via MySQL proxy using LDAP — should match @everyone → okta_shared
+CLEARTEXT="--enable-cleartext-plugin"
+result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_MYSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "" "SELECT 1" "$CLEARTEXT" 2>&1 || true)
+if [[ "$result" == "1" ]]; then
+    pass "MySQL @everyone: LDAP user authenticated via catch-all mapping"
+else
+    fail "MySQL @everyone: LDAP auth failed with catch-all mapping" "$result"
+fi
+
+# Verify priority: specific user mapping overrides @everyone
+run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (100, '${OKTA_USER}', 'okta_shared', 'specific user')" >/dev/null 2>&1
+run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_MYSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "" "SELECT 1" "$CLEARTEXT" 2>&1 || true)
+if [[ "$result" == "1" ]]; then
+    pass "MySQL @everyone: specific user mapping takes priority over catch-all"
+else
+    fail "MySQL @everyone: specific user + catch-all mapping failed" "$result"
+fi
+
+# --- PgSQL @everyone ---
+echo "  Testing PgSQL LDAP mapping with @everyone catch-all..."
+
+# Replace user-specific mapping with @everyone
+run_admin "DELETE FROM pgsql_ldap_mapping" >/dev/null 2>&1
+run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (999, '@everyone', 'okta_pgsql', 'catch-all')" >/dev/null 2>&1
+run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+
+# Verify @everyone is in runtime table
+result=$(run_admin "SELECT frontend_entity FROM runtime_pgsql_ldap_mapping WHERE frontend_entity='@everyone'")
+if [[ "$result" == *"@everyone"* ]]; then
+    pass "PgSQL @everyone: mapping loaded to runtime"
+else
+    fail "PgSQL @everyone: mapping not in runtime" "$result"
+fi
+
+# Authenticate via PgSQL proxy using LDAP — should match @everyone → okta_pgsql
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "testdb" "SELECT 1" 2>&1 || true)
+if [[ "$result" == *"1"* ]] && [[ "$result" != *"FATAL"* ]]; then
+    pass "PgSQL @everyone: LDAP user authenticated via catch-all mapping"
+else
+    fail "PgSQL @everyone: LDAP auth failed with catch-all mapping" "$result"
+fi
+
+# Verify priority: specific user mapping overrides @everyone
+run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (100, '${OKTA_USER}', 'okta_pgsql', 'specific user')" >/dev/null 2>&1
+run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "testdb" "SELECT 1" 2>&1 || true)
+if [[ "$result" == *"1"* ]] && [[ "$result" != *"FATAL"* ]]; then
+    pass "PgSQL @everyone: specific user mapping takes priority over catch-all"
+else
+    fail "PgSQL @everyone: specific user + catch-all mapping failed" "$result"
+fi
+
+# ---------------------------------------------------------------------------
+section "Phase 10: Cross-protocol LDAP mapping isolation"
+# ---------------------------------------------------------------------------
+# Verifies MySQL and PgSQL use their own ldap_mapping tables independently.
+# Bug: loading pgsql_ldap_mapping could overwrite the shared plugin mapping,
+# causing MySQL to resolve the wrong backend user (e.g. okta_pgsql instead of okta_shared).
+
+echo "  Loading both MySQL and PgSQL mappings with distinct backend users..."
+run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
+run_admin "DELETE FROM pgsql_ldap_mapping" >/dev/null 2>&1
+run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (999, '@everyone', 'okta_shared', 'mysql catch-all')" >/dev/null 2>&1
+run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (999, '@everyone', 'okta_pgsql', 'pgsql catch-all')" >/dev/null 2>&1
+# Load PgSQL mapping LAST — this would overwrite the shared plugin mapping in the old buggy code
+run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+
+# Test 1: MySQL LDAP auth must still work (uses okta_shared, not okta_pgsql)
+CLEARTEXT="--enable-cleartext-plugin"
+result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_MYSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "" "SELECT 1" "$CLEARTEXT" 2>&1 || true)
+if [[ "$result" == "1" ]]; then
+    pass "Cross-protocol: MySQL LDAP auth works after PgSQL mapping loaded"
+else
+    fail "Cross-protocol: MySQL LDAP auth broken by PgSQL mapping load" "$result"
+fi
+
+# Test 2: MySQL backend query reaches correct hostgroup
+result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_MYSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "testdb" "SELECT name FROM test_table LIMIT 1" "$CLEARTEXT" 2>&1 || true)
+if [[ "$result" == *"mysql_test_row"* ]]; then
+    pass "Cross-protocol: MySQL LDAP query routed to MySQL backend"
+else
+    fail "Cross-protocol: MySQL LDAP query failed (wrong backend?)" "$result"
+fi
+
+# Test 3: PgSQL LDAP auth still works
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "testdb" "SELECT name FROM test_table LIMIT 1" 2>&1 || true)
+if [[ "$result" == *"pgsql_test_row"* ]]; then
+    pass "Cross-protocol: PgSQL LDAP query routed to PgSQL backend"
+else
+    fail "Cross-protocol: PgSQL LDAP query failed (wrong backend?)" "$result"
+fi
+
+# Test 4: Reverse order — load MySQL mapping LAST
+run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "testdb" "SELECT name FROM test_table LIMIT 1" 2>&1 || true)
+if [[ "$result" == *"pgsql_test_row"* ]]; then
+    pass "Cross-protocol: PgSQL LDAP works after MySQL mapping loaded last"
+else
+    fail "Cross-protocol: PgSQL LDAP broken by MySQL mapping load" "$result"
+fi
+
+# ---------------------------------------------------------------------------
+section "Phase 11: LDAP mapping persistence across restart"
+# ---------------------------------------------------------------------------
+
+# This simulates the restart path: save → wipe memory/runtime → load from disk → load to runtime.
+# On a real restart (without --initial), ProxySQL loads disk.pgsql_ldap_mapping → main.pgsql_ldap_mapping,
+# then init_pgsql_users() loads the mapping to runtime.
+
+echo "  Testing MySQL LDAP mapping persistence..."
+
+# Set up mapping, save to disk
+run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
+run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (100, '${OKTA_USER}', 'okta_shared', 'persist test')" >/dev/null 2>&1
+run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (999, '@everyone', 'okta_shared', 'persist catch-all')" >/dev/null 2>&1
+run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+run_admin "SAVE MYSQL LDAP MAPPING TO DISK" >/dev/null 2>&1
+
+# Simulate restart: wipe memory and runtime, then reload from disk
+run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
+run_admin "DELETE FROM runtime_mysql_ldap_mapping" >/dev/null 2>&1
+count=$(run_admin "SELECT COUNT(*) FROM mysql_ldap_mapping")
+if [[ "$count" == "0" ]]; then
+    # Now load from disk (what happens on startup)
+    run_admin "LOAD MYSQL LDAP MAPPING FROM DISK" >/dev/null 2>&1
+    run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+    count_after=$(run_admin "SELECT COUNT(*) FROM runtime_mysql_ldap_mapping")
+    if [[ "$count_after" == "2" ]]; then
+        pass "MySQL persist: mapping restored from disk after simulated restart (2 rows)"
+    else
+        fail "MySQL persist: expected 2 rows in runtime after restore, got $count_after"
+    fi
+else
+    fail "MySQL persist: memory table not cleared (count=$count)"
+fi
+
+# Verify auth still works with the restored mapping
+CLEARTEXT="--enable-cleartext-plugin"
+result=$(run_mysql "$PROXYSQL_HOST" "$PROXYSQL_MYSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "" "SELECT 1" "$CLEARTEXT" 2>&1 || true)
+if [[ "$result" == "1" ]]; then
+    pass "MySQL persist: LDAP auth works after simulated restart"
+else
+    fail "MySQL persist: LDAP auth failed after simulated restart" "$result"
+fi
+
+echo "  Testing PgSQL LDAP mapping persistence..."
+
+# Set up mapping, save to disk
+run_admin "DELETE FROM pgsql_ldap_mapping" >/dev/null 2>&1
+run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (100, '${OKTA_USER}', 'okta_pgsql', 'persist test')" >/dev/null 2>&1
+run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (999, '@everyone', 'okta_pgsql', 'persist catch-all')" >/dev/null 2>&1
+run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+run_admin "SAVE PGSQL LDAP MAPPING TO DISK" >/dev/null 2>&1
+
+# Simulate restart: wipe memory and runtime, then reload from disk
+run_admin "DELETE FROM pgsql_ldap_mapping" >/dev/null 2>&1
+run_admin "DELETE FROM runtime_pgsql_ldap_mapping" >/dev/null 2>&1
+count=$(run_admin "SELECT COUNT(*) FROM pgsql_ldap_mapping")
+if [[ "$count" == "0" ]]; then
+    # Now load from disk (what happens on startup)
+    run_admin "LOAD PGSQL LDAP MAPPING FROM DISK" >/dev/null 2>&1
+    run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+    count_after=$(run_admin "SELECT COUNT(*) FROM runtime_pgsql_ldap_mapping")
+    if [[ "$count_after" == "2" ]]; then
+        pass "PgSQL persist: mapping restored from disk after simulated restart (2 rows)"
+    else
+        fail "PgSQL persist: expected 2 rows in runtime after restore, got $count_after"
+    fi
+else
+    fail "PgSQL persist: memory table not cleared (count=$count)"
+fi
+
+# Verify auth still works with the restored mapping
+result=$(run_psql "$PROXYSQL_HOST" "$PROXYSQL_PGSQL_PORT" "$OKTA_USER" "$OKTA_PASS" "testdb" "SELECT 1" 2>&1 || true)
+if [[ "$result" == *"1"* ]] && [[ "$result" != *"FATAL"* ]]; then
+    pass "PgSQL persist: LDAP auth works after simulated restart"
+else
+    fail "PgSQL persist: LDAP auth failed after simulated restart" "$result"
+fi
 
 # ---------------------------------------------------------------------------
 section "Results"

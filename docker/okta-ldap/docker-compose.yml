@@ -35,11 +35,11 @@ services:
       retries: 30
 
   proxysql:
-    # build:
-      # context: ../..
+    build:
+      context: ../..
       # dockerfile: docker/okta-ldap/Dockerfile
-      # dockerfile: test/system-test/okta-ldap/Dockerfile
-    image: ghcr.io/tanapoln/proxysql:v3.0
+      dockerfile: test/system-test/okta-ldap/Dockerfile.proxysql
+    # image: ghcr.io/tanapoln/proxysql:v3.0
     ports:
       - "6032:6032"
       - "6033:6033"

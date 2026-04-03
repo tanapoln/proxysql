@@ -105,7 +105,7 @@ mysql_users=
     }
 )
 
-# PostgreSQL users: standard user + limited user for whitelist testing
+# PostgreSQL users: standard frontend user + backend-only user for LDAP-mapped connections
 pgsql_users=
 (
     {
@@ -116,6 +116,15 @@ pgsql_users=
         backend=1
         frontend=1
         max_connections=200
+    },
+    {
+        username="okta_pgsql"
+        password="okta_pgsql_pass"
+        default_hostgroup=0
+        active=1
+        backend=1
+        frontend=0
+        max_connections=1000
     },
     {
         username="limiteduser"

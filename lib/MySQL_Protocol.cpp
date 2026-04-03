@@ -1885,9 +1885,30 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 			free(tmp_pass);
 #endif // debug
 			if (strcmp(vars1.password, (char *) vars1.pass) == 0) {
-				if (backend_username) {
+				// Resolve backend user from mysql_ldap_mapping directly, not from
+				// the plugin's shared mapping which may be overwritten by pgsql mapping.
+				char *resolved_backend_user = NULL;
+				{
+					extern ProxySQL_Admin *GloAdmin;
+					char *error = NULL;
+					int cols = 0, affected_rows = 0;
+					SQLite3_result *rs = NULL;
+					char query[512];
+					snprintf(query, sizeof(query),
+						"SELECT backend_entity FROM mysql_ldap_mapping WHERE frontend_entity IN ('%s','@everyone') ORDER BY priority LIMIT 1",
+						(const char*)vars1.user);
+					GloAdmin->admindb->execute_statement(query, &error, &cols, &affected_rows, &rs);
+					if (rs && rs->rows_count > 0) {
+						resolved_backend_user = strdup(rs->rows[0]->fields[0]);
+					}
+					if (rs) delete rs;
+					if (error) free(error);
+				}
+				const char *mysql_backend = resolved_backend_user ? resolved_backend_user : backend_username;
+
+				if (mysql_backend) {
 					account_details_t acct {
-						GloMyAuth->lookup(backend_username, USERNAME_BACKEND, { true, true, true })
+						GloMyAuth->lookup((char*)mysql_backend, USERNAME_BACKEND, { true, true, true })
 					};
 
 					if (acct.password) {
@@ -1909,9 +1930,7 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 						(*myds)->sess->session_fast_forward=attr1.fast_forward ? SESSION_FORWARD_TYPE_PERMANENT : SESSION_FORWARD_TYPE_NONE;
 						(*myds)->sess->user_max_connections=attr1.max_connections;
 						char *tmp_user=strdup((const char *)acct.username);
-						userinfo->set(backend_username, NULL, NULL, NULL);
-						// 'MySQL_Connection_userinfo::set' duplicates the supplied information, 'free' is required.
-						free(backend_username);
+						userinfo->set((char*)mysql_backend, NULL, NULL, NULL);
 						// For LDAP cleartext auth, set vars1.password to the backend user's
 						// password. This is critical because process_pkt_handshake_response
 						// (lines 2554-2557) overwrites userinfo->password with vars1.password
@@ -1926,7 +1945,7 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 						free(tmp_user);
 						ret=true;
 					} else {
-						proxy_error("Unable to load credentials for backend user %s , associated to LDAP user %s\n", backend_username, acct.username);
+						proxy_error("Unable to load credentials for backend user %s , associated to LDAP user %s\n", mysql_backend, vars1.user);
 					}
 
 					free_account_details(acct);
@@ -1934,6 +1953,9 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 					proxy_error("Unable to find backend user associated to LDAP user '%s'\n", vars1.user);
 					ret=false;
 				}
+				if (resolved_backend_user) free(resolved_backend_user);
+				if (backend_username) free(backend_username);
+				backend_username = NULL;
 				// Free LDAP-allocated strings if ownership was not transferred to the session
 				if (attr1.default_schema) { free(attr1.default_schema); attr1.default_schema = NULL; }
 				if (attr1.attributes) { free(attr1.attributes); attr1.attributes = NULL; }

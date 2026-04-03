@@ -5736,6 +5736,7 @@ void ProxySQL_Admin::__insert_or_replace_maintable_select_disktable() {
 #endif
 	if (GloMyLdapAuth) {
 		admindb->execute("INSERT OR REPLACE INTO main.mysql_ldap_mapping SELECT * FROM disk.mysql_ldap_mapping");
+		admindb->execute("INSERT OR REPLACE INTO main.pgsql_ldap_mapping SELECT * FROM disk.pgsql_ldap_mapping");
 	}
 }
 
@@ -5765,6 +5766,7 @@ void ProxySQL_Admin::__insert_or_replace_disktable_select_maintable() {
 #endif /* PROXYSQLCLICKHOUSE */
 	if (GloMyLdapAuth) {
  		admindb->execute("INSERT OR REPLACE INTO disk.mysql_ldap_mapping SELECT * FROM main.mysql_ldap_mapping");
+ 		admindb->execute("INSERT OR REPLACE INTO disk.pgsql_ldap_mapping SELECT * FROM main.pgsql_ldap_mapping");
 	}
 }
 
@@ -5876,6 +5878,44 @@ void ProxySQL_Admin::flush_admin_variables__from_memory_to_disk() {
 
 void ProxySQL_Admin::load_mysql_ldap_mapping_to_runtime() {
 	__add_active_users_ldap();
+	// Populate runtime_mysql_ldap_mapping admin table
+	save_mysql_ldap_mapping_runtime_to_database(true);
+}
+
+void ProxySQL_Admin::load_pgsql_ldap_mapping_to_runtime() {
+	if (GloMyLdapAuth == NULL) return;
+	char *error = NULL;
+	int cols = 0;
+	int affected_rows = 0;
+	SQLite3_result *resultset = NULL;
+	char *query = (char *)"SELECT priority, frontend_entity, backend_entity, comment FROM pgsql_ldap_mapping ORDER BY priority";
+	admindb->execute_statement(query, &error, &cols, &affected_rows, &resultset);
+	if (error) {
+		proxy_error("Error on %s : %s\n", query, error);
+	} else {
+		GloMyLdapAuth->load_mysql_ldap_mapping(resultset);
+	}
+	if (resultset) delete resultset;
+	// Populate runtime_pgsql_ldap_mapping admin table
+	save_pgsql_ldap_mapping_runtime_to_database(true);
+}
+
+void ProxySQL_Admin::flush_pgsql_ldap_mapping__from_disk_to_memory() {
+	admindb->wrlock();
+	admindb->execute("PRAGMA foreign_keys = OFF");
+	admindb->execute("DELETE FROM main.pgsql_ldap_mapping");
+	admindb->execute("INSERT INTO main.pgsql_ldap_mapping SELECT * FROM disk.pgsql_ldap_mapping");
+	admindb->execute("PRAGMA foreign_keys = ON");
+	admindb->wrunlock();
+}
+
+void ProxySQL_Admin::flush_pgsql_ldap_mapping__from_memory_to_disk() {
+	admindb->wrlock();
+	admindb->execute("PRAGMA foreign_keys = OFF");
+	admindb->execute("DELETE FROM disk.pgsql_ldap_mapping");
+	admindb->execute("INSERT INTO disk.pgsql_ldap_mapping SELECT * FROM main.pgsql_ldap_mapping");
+	admindb->execute("PRAGMA foreign_keys = ON");
+	admindb->wrunlock();
 }
 
 void ProxySQL_Admin::flush_mysql_ldap_mapping__from_disk_to_memory() {
@@ -6086,9 +6126,9 @@ void ProxySQL_Admin::__refresh_pgsql_users(
 	if (pgsql_users_resultset == nullptr && added_users != nullptr) {
 		pgsql_users_resultset.reset(added_users);
 	}
-	//if (GloMyLdapAuth) {
-	//	__add_active_users_ldap();
-	//}
+	if (GloMyLdapAuth) {
+		load_pgsql_ldap_mapping_to_runtime();
+	}
 	GloPgAuth->remove_inactives(USERNAME_BACKEND);
 	GloPgAuth->remove_inactives(USERNAME_FRONTEND);
 	set_variable((char*)"admin_credentials", (char*)"");

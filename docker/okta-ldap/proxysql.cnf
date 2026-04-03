@@ -17,4 +17,6 @@ mysql_variables=
 pgsql_variables=
 {
     interfaces="0.0.0.0:6133"
+    monitor_username="monitor"
+    monitor_password="monitor_pass"
 }

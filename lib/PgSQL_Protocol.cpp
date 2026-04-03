@@ -5,12 +5,15 @@
 #include "PgSQL_Authentication.h"
 #include "PgSQL_Data_Stream.h"
 #include "PgSQL_Protocol.h"
+#include "MySQL_LDAP_Authentication.hpp"
+#include "proxysql_admin.h"
 extern "C" {
 #include "usual/time.h"
 }
 //#include "usual/time.c"
 extern PgSQL_Threads_Handler* GloPTH;
 extern PgSQL_Authentication* GloPgAuth;
+extern MySQL_LDAP_Authentication* GloMyLdapAuth;
 
 /*
  * PgSQL type OIDs for result sets
@@ -390,7 +393,18 @@ bool PgSQL_Protocol::generate_pkt_initial_handshake(bool send, void** _ptr, unsi
 	}
 	*_thread_id = thread_id;
 
-	switch ((AUTHENTICATION_METHOD)pgsql_thread___authentication_method) {
+	AUTHENTICATION_METHOD chosen_auth = (AUTHENTICATION_METHOD)pgsql_thread___authentication_method;
+
+	// If user not in pgsql_users and LDAP plugin is loaded, force cleartext auth
+	// so we can obtain the password for LDAP bind.
+	if (GloMyLdapAuth) {
+		const char* user = (const char*)(*myds)->myconn->conn_params.get_value(PG_USER);
+		if (user && *user != '\0' && !GloPgAuth->exists((char*)user)) {
+			chosen_auth = AUTHENTICATION_METHOD::CLEAR_TEXT_PASSWORD;
+		}
+	}
+
+	switch (chosen_auth) {
 
 	case AUTHENTICATION_METHOD::NO_PASSWORD:
 		pgpkt.write_generic(type, "i", PG_PKT_AUTH_OK);
@@ -419,7 +433,7 @@ bool PgSQL_Protocol::generate_pkt_initial_handshake(bool send, void** _ptr, unsi
 		assert(0);
 	}
 
-	(*myds)->auth_method = (AUTHENTICATION_METHOD)pgsql_thread___authentication_method;
+	(*myds)->auth_method = chosen_auth;
 	(*myds)->auth_next_pkt_type = 'p';
 
 	if (send == true) {
@@ -1045,6 +1059,113 @@ EXECUTION_STATE PgSQL_Protocol::process_handshake_response_packet(unsigned char*
 			//generate_error_packet(true, false, "authentication method not supported", PGSQL_ERROR_CODES::ERRCODE_PROTOCOL_VIOLATION, true);
 			break;
 		}
+	} else if (GloMyLdapAuth && (*myds)->auth_method == AUTHENTICATION_METHOD::CLEAR_TEXT_PASSWORD) {
+		// User not in pgsql_users — try LDAP auth with cleartext password
+		uint32_t pass_len = 0;
+		pass = extract_password(&hdr, &pass_len);
+		using_password = (pass_len > 0);
+
+		if (pass && *pass != '\0') {
+			bool ldap_use_ssl = false;
+			int ldap_hg = 0;
+			char *ldap_schema = NULL;
+			bool ldap_schema_locked = false;
+			bool ldap_txn_persist = true;
+			bool ldap_ff = false;
+			int ldap_max_conn = 0;
+			void *ldap_sha1 = NULL;
+			char *ldap_attrs = NULL;
+			char *ldap_backend_user = NULL;
+
+			char *ldap_pass = GloMyLdapAuth->lookup(
+				(char*)user, pass, USERNAME_FRONTEND,
+				&ldap_use_ssl, &ldap_hg, &ldap_schema, &ldap_schema_locked,
+				&ldap_txn_persist, &ldap_ff, &ldap_max_conn, &ldap_sha1, &ldap_attrs,
+				&ldap_backend_user
+			);
+
+			if (ldap_pass) {
+				// LDAP auth succeeded — resolve backend pgsql user.
+				// The plugin cache may return a MySQL-specific backend user,
+				// so we resolve from pgsql_ldap_mapping via the admin interface.
+				char *resolved_backend_user = NULL;
+				{
+					// Query pgsql_ldap_mapping for this frontend user
+					extern ProxySQL_Admin *GloAdmin;
+					char *error = NULL;
+					int cols = 0, affected_rows = 0;
+					SQLite3_result *rs = NULL;
+					char query[512];
+					snprintf(query, sizeof(query),
+						"SELECT backend_entity FROM pgsql_ldap_mapping WHERE frontend_entity IN ('%s','@everyone') ORDER BY priority LIMIT 1",
+						user);
+					GloAdmin->admindb->execute_statement(query, &error, &cols, &affected_rows, &rs);
+					if (rs && rs->rows_count > 0) {
+						resolved_backend_user = strdup(rs->rows[0]->fields[0]);
+					}
+					if (rs) delete rs;
+					if (error) free(error);
+				}
+
+				// Fall back to the plugin's default backend user if no pgsql mapping found
+				const char *pgsql_backend = resolved_backend_user ? resolved_backend_user : (ldap_backend_user ? ldap_backend_user : NULL);
+
+				char *backend_pass = NULL;
+				if (pgsql_backend) {
+					backend_pass = GloPgAuth->lookup(
+						(char*)pgsql_backend, USERNAME_BACKEND,
+						&_ret_use_ssl, &default_hostgroup,
+						&transaction_persistent, &fast_forward,
+						&max_connections, &sha1_pass, &attributes
+					);
+				}
+
+				if (backend_pass) {
+					// Use the PgSQL backend user's hostgroup (from pgsql_users), not the LDAP plugin's
+					// MySQL-oriented ldap-okta_default_hostgroup setting.
+					(*myds)->sess->default_hostgroup = default_hostgroup;
+					if ((*myds)->sess->user_attributes) free((*myds)->sess->user_attributes);
+					(*myds)->sess->user_attributes = ldap_attrs;
+					ldap_attrs = NULL;
+					(*myds)->sess->transaction_persistent = ldap_txn_persist;
+					(*myds)->sess->session_fast_forward = SESSION_FORWARD_TYPE_NONE;
+					(*myds)->sess->user_max_connections = ldap_max_conn;
+					(*myds)->sess->use_ldap_auth = true;
+
+					// Set password to the backend user's password for backend connection
+					password = backend_pass;
+
+					// Verify cleartext password matches what LDAP returned
+					if (strcmp(ldap_pass, pass) == 0) {
+						ret = EXECUTION_STATE::SUCCESSFUL;
+					}
+
+					// Override userinfo with backend user credentials
+					if (userinfo->username) free(userinfo->username);
+					userinfo->username = strdup(pgsql_backend);
+					if (userinfo->password) free(userinfo->password);
+					userinfo->password = strdup(backend_pass);
+					userinfo->fe_username = strdup((const char*)user);
+				} else {
+					proxy_error("Unable to load credentials for backend pgsql user '%s', associated to LDAP user '%s'\n", pgsql_backend ? pgsql_backend : "(null)", user);
+				}
+				if (resolved_backend_user) free(resolved_backend_user);
+				if (attributes) { free(attributes); attributes = NULL; }
+			} else {
+				proxy_debug(PROXY_DEBUG_MYSQL_AUTH, 5, "Session=%p , DS=%p , user='%s'. LDAP auth failed.\n", (*myds)->sess, (*myds), user);
+			}
+
+			// Clean up LDAP-allocated resources
+			if (ldap_pass) free(ldap_pass);
+			if (ldap_backend_user) free(ldap_backend_user);
+			if (ldap_schema) free(ldap_schema);
+			if (ldap_attrs) free(ldap_attrs);
+			if (ldap_sha1) free(ldap_sha1);
+		}
+
+		if (ret != EXECUTION_STATE::SUCCESSFUL) {
+			generate_error_packet(true, false, "password authentication failed", PGSQL_ERROR_CODES::ERRCODE_INVALID_PASSWORD, true);
+		}
 	} else {
 		proxy_debug(PROXY_DEBUG_MYSQL_AUTH, 5, "Session=%p , DS=%p , user='%s'. User not found in the database.\n", (*myds)->sess, (*myds), user);
 		generate_error_packet(true, false, "User not found", PGSQL_ERROR_CODES::ERRCODE_PROTOCOL_VIOLATION, true);
@@ -1054,11 +1175,14 @@ EXECUTION_STATE PgSQL_Protocol::process_handshake_response_packet(unsigned char*
 
 		(*myds)->DSS = STATE_CLIENT_HANDSHAKE;
 
-		if (userinfo->username) free(userinfo->username);
-		if (userinfo->password) free(userinfo->password);
-
-		userinfo->username = strdup((const char*)user);
-		userinfo->password = strdup((const char*)password);
+		if ((*myds)->sess->use_ldap_auth == false) {
+			// Standard auth: set userinfo from the frontend user
+			if (userinfo->username) free(userinfo->username);
+			if (userinfo->password) free(userinfo->password);
+			userinfo->username = strdup((const char*)user);
+			userinfo->password = strdup((const char*)password);
+		}
+		// For LDAP auth, userinfo was already set to backend user credentials
 
 		std::vector<std::pair<std::string, std::string>> parameters;
 		std::vector<std::pair<std::string, std::string>> options_list;
