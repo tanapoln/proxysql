@@ -1,29 +1,33 @@
 # Okta LDAP Authentication Plugin for ProxySQL
 
-Authenticate MySQL frontend connections against **Okta's LDAP Interface** with result caching. Engineers connect with their Okta credentials; ProxySQL validates them via LDAP bind and routes to backend databases based on the schema name specified at connect time.
+Authenticate **MySQL and PostgreSQL** frontend connections against **Okta's LDAP Interface** with result caching. Engineers connect with their Okta credentials; ProxySQL validates them via LDAP bind and routes to backend databases using protocol-specific LDAP mapping tables.
 
 ## Architecture
 
 ```
 Engineer: mysql -h proxy -P 6033 -u alice@company.com -p'okta_pass' -D production_orders
+          psql  -h proxy -p 6133 -U alice@company.com -d analytics
+
     │
     ▼
-ProxySQL Frontend
+ProxySQL Frontend (MySQL :6033 / PgSQL :6133)
     ├─ 1. Okta LDAP Auth (with 3600s cache)
     │     └─ Validate alice@company.com via LDAP simple bind
-    ├─ 2. Map to shared backend user (e.g., "okta_shared")
-    │     └─ All Okta users → single backend MySQL user
-    └─ 3. Route via schema-based query rules
-          ├─ schema "production_orders" → hostgroup 10
-          ├─ schema "production_users"  → hostgroup 20
-          └─ schema "staging_orders"    → hostgroup 30
+    ├─ 2. Resolve backend user from mapping table
+    │     ├─ MySQL: mysql_ldap_mapping → okta_shared
+    │     └─ PgSQL: pgsql_ldap_mapping → okta_pgsql
+    └─ 3. Route via query rules / hostgroup
+          ├─ MySQL: schema "production_orders" → hostgroup 10
+          └─ PgSQL: default_hostgroup from pgsql_users
 ```
 
 **Key properties:**
+- Works with both MySQL and PostgreSQL protocols
 - No per-user backend mapping required — add/remove users entirely in Okta
-- Any authenticated user can access any database by specifying the schema
-- Optional per-user or per-group backend user overrides via `mysql_ldap_mapping`
+- Separate mapping tables per protocol (`mysql_ldap_mapping`, `pgsql_ldap_mapping`)
+- Optional per-user or per-group backend user overrides with `@everyone` catch-all
 - Access control layered via ProxySQL query rules
+- PgSQL LDAP auth uses cleartext password exchange (automatic for unknown users)
 
 ## Prerequisites
 
@@ -93,9 +97,11 @@ LOAD LDAP VARIABLES TO RUNTIME;
 SAVE LDAP VARIABLES TO DISK;
 ```
 
-### 3. Create the Shared Backend User
+### 3. Create Backend Users
 
-This is the real MySQL user ProxySQL uses for backend connections. Engineers never see this password.
+Backend users are the real database users ProxySQL connects with. Engineers never see these passwords. Use **different backend users** for MySQL and PgSQL to maintain protocol isolation.
+
+**MySQL backend user:**
 
 ```sql
 INSERT INTO mysql_users (username, password, active, backend, frontend, default_hostgroup)
@@ -105,39 +111,90 @@ LOAD MYSQL USERS TO RUNTIME;
 SAVE MYSQL USERS TO DISK;
 ```
 
-### 4. Set Up Schema-Based Hostgroup Routing
+**PgSQL backend user:**
 
 ```sql
--- Route by schema name to different database clusters
+INSERT INTO pgsql_users (username, password, active, backend, frontend, default_hostgroup)
+VALUES ('okta_pgsql', 'pgsql_secret_pass', 1, 1, 0, 0);
+--                                                ^ backend=1, frontend=0
+LOAD PGSQL USERS TO RUNTIME;
+SAVE PGSQL USERS TO DISK;
+```
+
+### 4. Configure LDAP Mapping
+
+Each protocol has its own mapping table. This allows different backend users per protocol.
+
+**MySQL mapping:**
+
+```sql
+INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment)
+VALUES (999, '@everyone', 'okta_shared', 'All Okta users → MySQL backend');
+LOAD MYSQL LDAP MAPPING TO RUNTIME;
+SAVE MYSQL LDAP MAPPING TO DISK;
+```
+
+**PgSQL mapping:**
+
+```sql
+INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment)
+VALUES (999, '@everyone', 'okta_pgsql', 'All Okta users → PgSQL backend');
+LOAD PGSQL LDAP MAPPING TO RUNTIME;
+SAVE PGSQL LDAP MAPPING TO DISK;
+```
+
+### 5. Set Up Schema-Based Hostgroup Routing (MySQL)
+
+```sql
 INSERT INTO mysql_query_rules (rule_id, active, schemaname, destination_hostgroup, apply)
 VALUES
   (100, 1, 'production_orders',  10, 0),
   (200, 1, 'production_users',   20, 0),
-  (300, 1, 'staging_orders',     30, 0),
-  (400, 1, 'staging_users',      40, 0),
-  (500, 1, 'analytics',          50, 0);
+  (300, 1, 'staging_orders',     30, 0);
 LOAD MYSQL QUERY RULES TO RUNTIME;
 SAVE MYSQL QUERY RULES TO DISK;
-
--- Configure backend servers in each hostgroup
-INSERT INTO mysql_servers (hostgroup_id, hostname, port) VALUES
-  (10, 'orders-db-primary.internal', 3306),
-  (20, 'users-db-primary.internal', 3306),
-  (30, 'staging-orders-db.internal', 3306),
-  (40, 'staging-users-db.internal', 3306),
-  (50, 'analytics-replica.internal', 3306);
-LOAD MYSQL SERVERS TO RUNTIME;
-SAVE MYSQL SERVERS TO DISK;
 ```
 
-### 5. Connect
+### 6. Connect
 
 ```bash
-# Alice connects to the orders database
-mysql -h proxysql.internal -P 6033 -u alice@company.com -p'her_okta_pass' -D production_orders
+# MySQL: Alice connects to the orders database
+mysql -h proxysql.internal -P 6033 -u alice@company.com -p'her_okta_pass' \
+  --enable-cleartext-plugin -D production_orders
 
-# Bob connects to analytics
-mysql -h proxysql.internal -P 6033 -u bob@company.com -p'his_okta_pass' -D analytics
+# PgSQL: Alice connects to analytics
+PGPASSWORD='her_okta_pass' psql -h proxysql.internal -p 6133 \
+  -U alice@company.com -d analytics
+```
+
+## Admin Commands Reference
+
+### LDAP Variables
+
+```sql
+LOAD LDAP VARIABLES TO RUNTIME;
+SAVE LDAP VARIABLES TO DISK;
+LOAD LDAP VARIABLES FROM DISK;
+SAVE LDAP VARIABLES FROM RUNTIME;
+SHOW LDAP VARIABLES;
+```
+
+### MySQL LDAP Mapping
+
+```sql
+LOAD MYSQL LDAP MAPPING TO RUNTIME;
+SAVE MYSQL LDAP MAPPING FROM RUNTIME;
+LOAD MYSQL LDAP MAPPING FROM DISK;
+SAVE MYSQL LDAP MAPPING TO DISK;
+```
+
+### PgSQL LDAP Mapping
+
+```sql
+LOAD PGSQL LDAP MAPPING TO RUNTIME;
+SAVE PGSQL LDAP MAPPING FROM RUNTIME;
+LOAD PGSQL LDAP MAPPING FROM DISK;
+SAVE PGSQL LDAP MAPPING TO DISK;
 ```
 
 ## Admin Variables Reference
@@ -152,42 +209,63 @@ All variables use the `ldap-` prefix when set via the admin interface.
 | `ldap-okta_cache_ttl` | `3600` | Seconds to cache successful auth results |
 | `ldap-okta_bind_timeout_ms` | `5000` | LDAP connection/bind timeout in milliseconds |
 | `ldap-okta_enabled` | `true` | Enable/disable the plugin. When disabled, falls through to standard auth |
-| `ldap-okta_default_backend_user` | `okta_shared` | Backend MySQL user for Okta-authenticated connections |
-| `ldap-okta_default_hostgroup` | `0` | Default hostgroup (overridden by query rules) |
+| `ldap-okta_default_backend_user` | `okta_shared` | Fallback backend user when no mapping matches (used if `mysql_ldap_mapping` / `pgsql_ldap_mapping` has no entry) |
+| `ldap-okta_default_hostgroup` | `0` | Default hostgroup for MySQL (PgSQL uses the backend user's hostgroup from `pgsql_users`) |
 | `ldap-okta_default_max_connections` | `1000` | Max frontend connections per Okta user |
 | `ldap-okta_starttls` | `false` | Use StartTLS (for `ldap://` URLs; not needed for `ldaps://`) |
 
 ## Authentication Flow
 
-1. Client connects to ProxySQL with `username` and `password`
-2. If the username is not found in `mysql_users` (frontend), ProxySQL asks the LDAP plugin
+### MySQL
+
+1. Client connects to ProxySQL MySQL port (6033) with `username` and `password`
+2. If the username is not found in `mysql_users` (frontend), ProxySQL switches to cleartext auth and asks the LDAP plugin
 3. Plugin checks its local cache:
    - **Cache hit**: SHA-256 of password matches and entry is within TTL → return immediately
    - **Cache miss/expired**: perform LDAP simple bind against Okta
 4. On successful LDAP bind:
-   - Resolve backend user (from `mysql_ldap_mapping` or default)
-   - Cache the result
-   - Return backend username to ProxySQL
+   - Resolve backend user from `mysql_ldap_mapping` (supports exact match and `@everyone`)
+   - Cache the auth result
 5. ProxySQL looks up the backend username in `mysql_users` to get the real DB password
-6. Connection routes to hostgroup based on query rules matching the schema name
+6. Connection routes to hostgroup based on query rules
 
-## LDAP Mapping (Optional)
+### PostgreSQL
 
-By default, all Okta users map to the `okta_default_backend_user`. For fine-grained control:
+1. Client connects to ProxySQL PgSQL port (6133) with `username` and `password`
+2. If the username is not found in `pgsql_users`, ProxySQL requests cleartext auth from the client
+3. Plugin validates via LDAP bind (same cache as MySQL)
+4. On successful LDAP bind:
+   - Resolve backend user from `pgsql_ldap_mapping` (supports exact match and `@everyone`)
+   - Use the backend user's `default_hostgroup` from `pgsql_users` (not `ldap-okta_default_hostgroup`)
+5. ProxySQL looks up the backend username in `pgsql_users` to get the real DB password
+6. Connection routes to the PgSQL backend
+
+## LDAP Mapping
+
+Each protocol has its own mapping table (`mysql_ldap_mapping`, `pgsql_ldap_mapping`). The mapping resolution follows priority order (lower number = higher priority):
 
 ```sql
--- Map specific users to different backend users
+-- MySQL: Map specific users, with catch-all fallback
 INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment)
 VALUES
   (100, 'dba-alice@company.com', 'okta_admin', 'DBA team gets admin backend user'),
   (200, 'bob@company.com', 'okta_readonly', 'Bob is read-only'),
   (999, '@everyone', 'okta_shared', 'Everyone else');
 LOAD MYSQL LDAP MAPPING TO RUNTIME;
+SAVE MYSQL LDAP MAPPING TO DISK;
+
+-- PgSQL: Separate mapping, can use different backend users
+INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment)
+VALUES
+  (100, 'dba-alice@company.com', 'okta_pg_admin', 'DBA gets PgSQL admin'),
+  (999, '@everyone', 'okta_pgsql', 'Everyone else');
+LOAD PGSQL LDAP MAPPING TO RUNTIME;
+SAVE PGSQL LDAP MAPPING TO DISK;
 ```
 
 The `@everyone` wildcard matches any authenticated user not matched by earlier entries.
 
-Each backend entity (`okta_admin`, `okta_readonly`, `okta_shared`) must exist in `mysql_users` with `backend=1, frontend=0`.
+Each backend entity must exist in the corresponding users table with `backend=1, frontend=0`.
 
 ## Monitoring
 
@@ -270,27 +348,29 @@ SET ldap-okta_cache_ttl=3600;
 LOAD LDAP VARIABLES TO RUNTIME;
 ```
 
-## Running Tests
+## Running System Tests
 
 ```bash
-# Build the plugin first
-make build_okta_ldap_plugin
+cd test/system-test/okta-ldap
 
-# Build and run unit tests (no Okta server needed)
-cd test/tap/tests
-g++ -std=c++17 -DCXX17 -O0 -ggdb \
-  -I../../../include \
-  -I../../../deps/sqlite3/sqlite3 \
-  -I/opt/homebrew/Cellar/openssl@3/3.5.1/include \
-  -o test_okta_ldap_auth-t \
-  test_okta_ldap_auth-t.cpp \
-  sqlite3db_stub.cpp \
-  ../../../deps/sqlite3/sqlite3/sqlite3.o \
-  -lpthread \
-  -L/opt/homebrew/Cellar/openssl@3/3.5.1/lib -lssl -lcrypto
+# Build and run all tests (requires Docker)
+docker compose build proxysql
+docker compose up -d mysql mysql2 pgsql proxysql
+docker compose run --rm test-runner
 
-./test_okta_ldap_auth-t ../../../binaries/proxysql_okta_ldap_auth.dylib
+# Clean up
+docker compose down -v
 ```
+
+The system tests cover:
+- MySQL and PgSQL backend connectivity
+- Standard auth for both protocols
+- LDAP auth via MySQL proxy (Okta bind, cache, wrong password, non-existent user)
+- LDAP auth via PgSQL proxy (cleartext auth, backend query routing)
+- LOAD/SAVE MYSQL LDAP MAPPING commands (runtime, disk, round-trip)
+- `@everyone` catch-all mapping for both protocols
+- Cross-protocol isolation (MySQL and PgSQL use independent mapping tables)
+- Persistence across restart (save to disk, reload, verify)
 
 ## Troubleshooting
 
@@ -299,5 +379,9 @@ g++ -std=c++17 -DCXX17 -O0 -ggdb \
 | "okta_url not configured" in stderr | Set `ldap-okta_url` and `LOAD LDAP VARIABLES TO RUNTIME` |
 | LDAP bind timeout | Increase `ldap-okta_bind_timeout_ms`; verify network path to Okta |
 | All users rejected | Check `ldap-okta_enabled=true`; verify DN format matches Okta's user DN structure |
-| "Connection refused" after disabling in Okta | Working as intended — wait for cache to expire or set `okta_cache_ttl=0` |
-| Backend auth failure | Ensure `okta_default_backend_user` exists in `mysql_users` with `backend=1` |
+| MySQL: "Access denied" with correct Okta password | Ensure `mysql_ldap_mapping` has an entry (or `@everyone`), and the backend user exists in `mysql_users` with `backend=1` |
+| PgSQL: "password authentication failed" | Ensure `pgsql_ldap_mapping` has an entry (or `@everyone`), and the backend user exists in `pgsql_users` with `backend=1` |
+| PgSQL: "Hostgroup has no servers" | The PgSQL backend user's `default_hostgroup` in `pgsql_users` must match a hostgroup with PgSQL servers |
+| PgSQL monitor auth failure | PostgreSQL 16+ defaults to scram-sha-256; create the monitor user with `SET password_encryption = 'md5'` and add `host all monitor all md5` to `pg_hba.conf` |
+| "Connection refused" after disabling in Okta | Working as intended — wait for cache to expire or set `ldap-okta_cache_ttl=0` |
+| Cross-protocol backend user confusion | Each protocol resolves from its own mapping table; ensure `LOAD MYSQL LDAP MAPPING TO RUNTIME` and `LOAD PGSQL LDAP MAPPING TO RUNTIME` are both run |
