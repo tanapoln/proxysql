@@ -34,6 +34,11 @@
 // insert so the cache cannot grow without bound as distinct users connect.
 #define OKTA_LDAP_CACHE_MAX_ENTRIES 10000
 
+// When the connection tracker reaches this many entries, entries with no active
+// connections are swept before adding a new user, so it cannot grow without
+// bound as distinct LDAP users connect over time.
+#define OKTA_LDAP_CONN_TRACKER_MAX_ENTRIES 10000
+
 // -----------------------------------------------------------------------
 // Variable descriptors — define all admin-configurable settings
 // -----------------------------------------------------------------------
@@ -424,10 +429,24 @@ int Okta_LDAP_Plugin::increase_frontend_user_connections(char *username, int *mc
 	pthread_rwlock_unlock(&main_lock);
 
 	pthread_rwlock_wrlock(&conn_lock);
-	auto& tracker = conn_tracker[uname];
-	if (tracker.max_connections == 0) {
-		tracker.max_connections = default_max;
+	// Bound tracker growth: entries are kept after disconnect (so idle-but-recent
+	// users still show in stats_mysql_users), so before adding a NEW user, once
+	// the table is large, reclaim entries with no active connections.
+	if (conn_tracker.find(uname) == conn_tracker.end()
+		&& conn_tracker.size() >= OKTA_LDAP_CONN_TRACKER_MAX_ENTRIES) {
+		for (auto it2 = conn_tracker.begin(); it2 != conn_tracker.end(); ) {
+			if (it2->second.current_connections <= 0) {
+				it2 = conn_tracker.erase(it2);
+			} else {
+				++it2;
+			}
+		}
 	}
+	auto& tracker = conn_tracker[uname];
+	// LDAP users have no per-user override, so always track the current global
+	// default; this lets a runtime change to okta_default_max_connections take
+	// effect for users that have already connected once.
+	tracker.max_connections = default_max;
 	// Match MySQL_Authentication::increase_frontend_user_connections: report the
 	// free slots BEFORE admitting this connection and only increment when there
 	// is room. When full, return 0 without incrementing, so that exactly
