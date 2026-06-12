@@ -25,7 +25,7 @@ ProxySQL Frontend (MySQL :6033 / PgSQL :6133)
 - Works with both MySQL and PostgreSQL protocols
 - No per-user backend mapping required — add/remove users entirely in Okta
 - Separate mapping tables per protocol (`mysql_ldap_mapping`, `pgsql_ldap_mapping`)
-- Optional per-user or per-group backend user overrides with `@everyone` catch-all
+- Optional per-user backend user overrides, with an `@everyone` catch-all (mapping by Okta group is not currently supported — entries match an exact username or `@everyone`)
 - Access control layered via ProxySQL query rules
 - PgSQL LDAP auth uses cleartext password exchange (automatic for unknown users)
 

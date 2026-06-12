@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
 		plugin_path = "binaries/proxysql_okta_ldap_auth.dylib";
 	}
 
-	plan(36);
+	plan(41);
 
 	// ===================================================================
 	// 1. Load plugin via dlopen
@@ -301,6 +301,71 @@ int main(int argc, char** argv) {
 
 		if (dm) delete dm;
 		if (dp) delete dp;
+	}
+
+	// ===================================================================
+	// 9c. Per-protocol backend resolution — the path the MySQL/PgSQL protocol
+	// handlers use instead of querying the admin DB. The same frontend user must
+	// resolve to a different backend per protocol; an unmapped user falls through
+	// to @everyone; an exact match beats @everyone regardless of priority; and
+	// when neither matches the result is NULL (caller uses the default user).
+	// resolve_*_backend take the lock internally, so the test must NOT hold it.
+	// ===================================================================
+	{
+		SQLite3_result *m = make_mapping_result({
+			{100, "alice@company.com", "okta_m_alice", "m"},
+			{999, "@everyone",         "okta_m_all",   "m"},
+		});
+		SQLite3_result *p = make_mapping_result({
+			{100, "alice@company.com", "okta_p_alice", "p"},
+			{999, "@everyone",         "okta_p_all",   "p"},
+		});
+		plugin->wrlock();
+		plugin->load_mysql_ldap_mapping(m);
+		plugin->load_pgsql_ldap_mapping(p);
+		plugin->wrunlock();
+		delete m;
+		delete p;
+
+		char *mb = plugin->resolve_mysql_backend((char*)"alice@company.com");
+		char *pb = plugin->resolve_pgsql_backend((char*)"alice@company.com");
+		ok(mb && strcmp(mb, "okta_m_alice") == 0,
+			"resolve_mysql_backend(alice) -> okta_m_alice (got '%s')", mb ? mb : "NULL");
+		ok(pb && strcmp(pb, "okta_p_alice") == 0,
+			"resolve_pgsql_backend(alice) -> okta_p_alice — isolated per protocol (got '%s')", pb ? pb : "NULL");
+		if (mb) free(mb);
+		if (pb) free(pb);
+
+		char *me = plugin->resolve_mysql_backend((char*)"nobody@company.com");
+		ok(me && strcmp(me, "okta_m_all") == 0,
+			"resolve falls through to @everyone for an unmapped user (got '%s')", me ? me : "NULL");
+		if (me) free(me);
+
+		// @everyone given a *lower* priority number than the exact entry.
+		SQLite3_result *m2 = make_mapping_result({
+			{1,   "@everyone",       "okta_all_hi", "m"},
+			{100, "vip@company.com", "okta_vip",    "m"},
+		});
+		plugin->wrlock();
+		plugin->load_mysql_ldap_mapping(m2);
+		plugin->wrunlock();
+		delete m2;
+		char *vip = plugin->resolve_mysql_backend((char*)"vip@company.com");
+		ok(vip && strcmp(vip, "okta_vip") == 0,
+			"exact mapping beats @everyone regardless of priority (got '%s')", vip ? vip : "NULL");
+		if (vip) free(vip);
+
+		// No exact entry and no @everyone -> NULL.
+		SQLite3_result *m3 = make_mapping_result({
+			{100, "only@company.com", "okta_only", "m"},
+		});
+		plugin->wrlock();
+		plugin->load_mysql_ldap_mapping(m3);
+		plugin->wrunlock();
+		delete m3;
+		char *none = plugin->resolve_mysql_backend((char*)"absent@company.com");
+		ok(none == NULL, "resolve returns NULL when neither an exact entry nor @everyone matches");
+		if (none) free(none);
 	}
 
 	// ===================================================================

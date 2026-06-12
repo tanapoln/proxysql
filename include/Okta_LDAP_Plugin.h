@@ -112,6 +112,8 @@ public:
 	// --- LDAP mapping table (separate per-protocol storage) ---
 	void            load_mysql_ldap_mapping(SQLite3_result *result) override;
 	void            load_pgsql_ldap_mapping(SQLite3_result *result) override;
+	char*           resolve_mysql_backend(char *frontend_user) override;
+	char*           resolve_pgsql_backend(char *frontend_user) override;
 	SQLite3_result* dump_table_mysql_ldap_mapping() override;
 	SQLite3_result* dump_table_pgsql_ldap_mapping() override;
 	uint64_t        get_ldap_mapping_runtime_checksum() override;

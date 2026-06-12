@@ -33,6 +33,11 @@ public:
 
 	virtual void load_mysql_ldap_mapping(SQLite3_result *result) {};
 	virtual void load_pgsql_ldap_mapping(SQLite3_result *result) {};
+	// Resolve the backend user for a frontend (LDAP) username from the runtime
+	// mapping of the given protocol. Returns a malloc'd backend-entity string the
+	// caller must free, or NULL when neither an exact entry nor '@everyone' matches.
+	virtual char * resolve_mysql_backend(char *frontend_user) { return NULL; };
+	virtual char * resolve_pgsql_backend(char *frontend_user) { return NULL; };
 	virtual SQLite3_result * dump_table_mysql_ldap_mapping() { return NULL; };
 	virtual SQLite3_result * dump_table_pgsql_ldap_mapping() { return NULL; };
 	virtual uint64_t get_ldap_mapping_runtime_checksum() { return 0; };

@@ -166,14 +166,15 @@ out=$(mysql_ldap "$ALICE" "WrongPass!" "SELECT 1" || true)
 if is_rejected "$out"; then pass "MySQL: wrong password rejected"; else fail "MySQL: wrong password was accepted" "$out"; fi
 
 # ===========================================================================
-section "Phase 3: SQL injection / username escaping (#3)"
+section "Phase 3: username with SQL metacharacters resolves safely (#3)"
 # ===========================================================================
-# Map o'brien (apostrophe) to a VALID backend, but set the default backend user
-# to a bogus name. If the username is not escaped, the lookup query
-#   ... frontend_entity IN ('o'brien@example.com','@everyone') ...
-# is malformed, returns no row, and resolution falls back to the (bogus) default
-# -> auth is rejected. With proper escaping the exact mapping resolves and auth
-# succeeds. So o'brien succeeding proves the escaping fix.
+# Map o'brien (apostrophe) to a VALID backend, and set the default backend user
+# to a bogus name. Backend resolution is an in-memory match against the runtime
+# mapping (no SQL is built from the username, so there is no injection surface),
+# but a username with metacharacters must still round-trip correctly: o'brien
+# must resolve via its exact mapping rather than fall back to the (bogus)
+# default. So o'brien succeeding proves the username is handled correctly end to
+# end (and the mapping INSERT, which IS SQL, escapes it — see sqlq).
 reset_mappings
 set_ldap_var "ldap-okta_default_backend_user" "'__no_such_backend__'"
 run_admin "LOAD LDAP VARIABLES TO RUNTIME" >/dev/null 2>&1
@@ -338,6 +339,25 @@ if is_query_ok "$out"; then
     pass "ProxySQL still serves valid logins after the rejected one (no crash)"
 else
     fail "ProxySQL not serving after the rejected login" "$out"
+fi
+
+# ===========================================================================
+section "Phase 8: MySQL per-user tracking keys on the Okta user (#2)"
+# ===========================================================================
+# After a MySQL LDAP login, stats_mysql_users must list the Okta username (the
+# session's fe_username), not the shared backend user. With the bug fe_username
+# was set to the backend user, so every Okta user collapsed onto one
+# backend-named counter and per-user max_connections/stats were meaningless.
+reset_mappings
+map_mysql 100 "$ALICE" "$MYSQL_BACKEND"
+mysql_ldap "$ALICE" "$ALICE_PASS" "SELECT 1" >/dev/null 2>&1 || true
+# stats_mysql_users is refreshed on SELECT and includes the LDAP tracker rows;
+# the per-user entry persists (at 0 connections) after the client disconnects.
+u=$(run_admin "SELECT username FROM stats_mysql_users WHERE username='$ALICE'")
+if [[ "$u" == "$ALICE" ]]; then
+    pass "stats_mysql_users tracks the Okta user '$ALICE' (per-user, not the backend user)"
+else
+    fail "per-user tracking keyed on the backend user, not the Okta user" "stats_mysql_users row for '$ALICE' = '$u'"
 fi
 
 # ===========================================================================

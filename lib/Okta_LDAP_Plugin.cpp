@@ -238,6 +238,37 @@ std::string Okta_LDAP_Plugin::resolve_backend_user() {
 }
 
 // -----------------------------------------------------------------------
+// Per-protocol backend resolution from the runtime mapping vector.
+// An exact frontend match wins over the "@everyone" catch-all regardless of
+// priority. Returns a malloc'd string (caller frees) or NULL when neither
+// matches, in which case the caller falls back to the default backend user.
+// -----------------------------------------------------------------------
+static char* resolve_in_mapping(const std::vector<LDAPMappingEntry>& mapping, const char* frontend_user) {
+	if (!frontend_user) return NULL;
+	for (const auto& e : mapping) {
+		if (e.frontend_entity == frontend_user) return strdup(e.backend_entity.c_str());
+	}
+	for (const auto& e : mapping) {
+		if (e.frontend_entity == "@everyone") return strdup(e.backend_entity.c_str());
+	}
+	return NULL;
+}
+
+char* Okta_LDAP_Plugin::resolve_mysql_backend(char* frontend_user) {
+	pthread_rwlock_rdlock(&main_lock);
+	char* be = resolve_in_mapping(mysql_ldap_mapping, frontend_user);
+	pthread_rwlock_unlock(&main_lock);
+	return be;
+}
+
+char* Okta_LDAP_Plugin::resolve_pgsql_backend(char* frontend_user) {
+	pthread_rwlock_rdlock(&main_lock);
+	char* be = resolve_in_mapping(pgsql_ldap_mapping, frontend_user);
+	pthread_rwlock_unlock(&main_lock);
+	return be;
+}
+
+// -----------------------------------------------------------------------
 // Core authentication: lookup()
 // -----------------------------------------------------------------------
 char* Okta_LDAP_Plugin::lookup(

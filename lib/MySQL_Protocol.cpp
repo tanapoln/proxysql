@@ -1885,30 +1885,11 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 			free(tmp_pass);
 #endif // debug
 			if (strcmp(vars1.password, (char *) vars1.pass) == 0) {
-				// Resolve backend user from mysql_ldap_mapping directly, not from
-				// the plugin's shared mapping which may be overwritten by pgsql mapping.
-				char *resolved_backend_user = NULL;
-				{
-					extern ProxySQL_Admin *GloAdmin;
-					char *error = NULL;
-					int cols = 0, affected_rows = 0;
-					SQLite3_result *rs = NULL;
-					// Escape the (client-supplied) username before interpolating it into
-					// SQL to prevent injection. An exact mapping always wins over the
-					// '@everyone' catch-all regardless of its priority value.
-					char *esc_user = escape_string_single_quotes((char*)vars1.user, false);
-					char query[512];
-					snprintf(query, sizeof(query),
-						"SELECT backend_entity FROM mysql_ldap_mapping WHERE frontend_entity IN ('%s','@everyone') ORDER BY (frontend_entity='@everyone'), priority LIMIT 1",
-						esc_user);
-					if (esc_user != (char*)vars1.user) free(esc_user);
-					GloAdmin->admindb->execute_statement(query, &error, &cols, &affected_rows, &rs);
-					if (rs && rs->rows_count > 0) {
-						resolved_backend_user = strdup(rs->rows[0]->fields[0]);
-					}
-					if (rs) delete rs;
-					if (error) free(error);
-				}
+				// Resolve the backend user from the MySQL runtime mapping (its own
+				// per-protocol table). No SQL is built from the username, so there is no
+				// injection surface, and resolution reflects LOAD MYSQL LDAP MAPPING TO
+				// RUNTIME. Falls back to the plugin's default backend user.
+				char *resolved_backend_user = GloMyLdapAuth->resolve_mysql_backend((char*)vars1.user);
 				const char *mysql_backend = resolved_backend_user ? resolved_backend_user : backend_username;
 
 				if (mysql_backend) {
@@ -1934,7 +1915,6 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 						(*myds)->sess->transaction_persistent=attr1.transaction_persistent;
 						(*myds)->sess->session_fast_forward=attr1.fast_forward ? SESSION_FORWARD_TYPE_PERMANENT : SESSION_FORWARD_TYPE_NONE;
 						(*myds)->sess->user_max_connections=attr1.max_connections;
-						char *tmp_user=strdup((const char *)acct.username);
 						userinfo->set((char*)mysql_backend, NULL, NULL, NULL);
 						// For LDAP cleartext auth, set vars1.password to the backend user's
 						// password. This is critical because process_pkt_handshake_response
@@ -1946,8 +1926,10 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 							if (userinfo->sha1_pass) free(userinfo->sha1_pass);
 							userinfo->sha1_pass = sha1_pass_hex((char*)acct.sha1_pass);
 						}
-						userinfo->fe_username=strdup((const char *)tmp_user);
-						free(tmp_user);
+						// fe_username must be the Okta (frontend) user, not the backend
+						// user — per-user connection limits and stats_mysql_users key off it,
+						// and the PgSQL path already does this.
+						userinfo->fe_username=strdup((const char *)vars1.user);
 						ret=true;
 					} else {
 						proxy_error("Unable to load credentials for backend user %s , associated to LDAP user %s\n", mysql_backend, vars1.user);

@@ -40,11 +40,12 @@ guarding a specific fix:
 
 | Phase | Guards |
 |-------|--------|
-| 3 | username is SQL-escaped in the mapping lookup (a `'` in the username must not break or bypass resolution) |
+| 3 | a username containing SQL metacharacters (e.g. `'`) resolves via its exact mapping and cannot break or bypass resolution |
 | 4 | an exact mapping beats the `@everyone` catch-all even when `@everyone` has a numerically higher priority |
 | 5 | the MySQL and PgSQL mapping tables are independent (loading one must not clobber the other's runtime table) |
 | 6 | the PgSQL frontend connection counter is decremented on disconnect (no per-user lockout / DoS) |
 | 7 | mapping to a non-existent backend user is rejected cleanly without crashing ProxySQL |
+| 8 | MySQL per-user connection tracking/stats key on the Okta user, not the shared backend user |
 
 ## Running locally
 
