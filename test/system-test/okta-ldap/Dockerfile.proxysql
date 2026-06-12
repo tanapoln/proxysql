@@ -40,6 +40,14 @@ COPY . .
 # Configure git safe directory (needed for git describe in Makefile)
 RUN git config --global --add safe.directory /opt/proxysql
 
+# The Makefile derives the version from `git describe`, which needs tags. CI
+# checkouts are shallow and this fork has no tags, so provide a deterministic
+# version (overridable via --build-arg). Without it the build aborts at
+# Makefile:34 with an empty CURVER. The value only affects this test image's
+# reported version string.
+ARG GIT_VERSION=3.0.0-okta-test
+ENV GIT_VERSION=${GIT_VERSION}
+
 # Build dependencies + ProxySQL binary
 RUN make cleanbuild || true
 RUN make build_deps -j$(nproc)
