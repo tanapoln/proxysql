@@ -15,6 +15,10 @@
 #endif
 
 void free_account_details(account_details_t& ad) {
+	if (ad.username) {
+		free(ad.username);
+		ad.username = nullptr;
+	}
 	if (ad.password) {
 		free(ad.password);
 		ad.password = nullptr;

@@ -30,6 +30,10 @@
 
 #define OKTA_LDAP_PLUGIN_VERSION "1.0.0"
 
+// When the auth cache reaches this many entries, expired entries are swept on
+// insert so the cache cannot grow without bound as distinct users connect.
+#define OKTA_LDAP_CACHE_MAX_ENTRIES 10000
+
 // -----------------------------------------------------------------------
 // Variable descriptors — define all admin-configurable settings
 // -----------------------------------------------------------------------
@@ -117,10 +121,23 @@ std::string Okta_LDAP_Plugin::build_user_dn(const char *username) {
 		}
 	}
 
-	// Replace first %s with escaped username, second %s with base_dn
-	char buf[1024];
-	snprintf(buf, sizeof(buf), fmt.c_str(), escaped_username.c_str(), base_dn.c_str());
-	return std::string(buf);
+	// Substitute the first two "%s" tokens manually: 1st = escaped username,
+	// 2nd = base_dn. Done without printf so that other '%' sequences in the
+	// admin-supplied format string cannot cause format-string undefined behavior,
+	// and so the result is not silently truncated to a fixed buffer size.
+	std::string dn;
+	dn.reserve(fmt.size() + escaped_username.size() + base_dn.size());
+	int subst = 0;
+	for (size_t i = 0; i < fmt.size(); i++) {
+		if (fmt[i] == '%' && i + 1 < fmt.size() && fmt[i + 1] == 's' && subst < 2) {
+			dn += (subst == 0) ? escaped_username : base_dn;
+			subst++;
+			i++; // skip the 's'
+		} else {
+			dn += fmt[i];
+		}
+	}
+	return dn;
 }
 
 // -----------------------------------------------------------------------
@@ -207,26 +224,12 @@ bool Okta_LDAP_Plugin::ldap_authenticate(const char *username, const char *passw
 // -----------------------------------------------------------------------
 // Resolve backend user from mapping table or default
 // -----------------------------------------------------------------------
-std::string Okta_LDAP_Plugin::resolve_backend_user(const char *frontend_username) {
-	// main_lock must be held by caller (at least rdlock)
-	// Search mapping by priority order (lowest first)
-	for (const auto& entry : ldap_mapping) {
-		if (entry.frontend_entity == frontend_username) {
-			return entry.backend_entity;
-		}
-	}
-	// Check for wildcard/group matches (entries starting with @)
-	for (const auto& entry : ldap_mapping) {
-		if (!entry.frontend_entity.empty() && entry.frontend_entity[0] == '@') {
-			// Wildcard match: "@everyone" matches all users
-			// In a full implementation, you'd check group membership via LDAP
-			// For now, "@everyone" matches any authenticated user
-			if (entry.frontend_entity == "@everyone") {
-				return entry.backend_entity;
-			}
-		}
-	}
-	// Fall back to default backend user
+std::string Okta_LDAP_Plugin::resolve_backend_user() {
+	// main_lock must be held by caller (at least rdlock).
+	// Per-protocol mapping resolution (exact match + "@everyone") is performed by
+	// the MySQL/PgSQL protocol handlers against their own mapping tables. Because
+	// lookup() is protocol-agnostic, here we only return the configured default
+	// backend user as a protocol-neutral fallback.
 	auto it = variables.find("okta_default_backend_user");
 	if (it != variables.end()) {
 		return it->second;
@@ -313,7 +316,7 @@ char* Okta_LDAP_Plugin::lookup(
 
 	// --- 3. Resolve backend user ---
 	pthread_rwlock_rdlock(&main_lock);
-	std::string backend_user = resolve_backend_user(username);
+	std::string backend_user = resolve_backend_user();
 
 	int hg = 0;
 	auto it_hg = variables.find("okta_default_hostgroup");
@@ -322,6 +325,10 @@ char* Okta_LDAP_Plugin::lookup(
 	int maxconn = 1000;
 	auto it_mc = variables.find("okta_default_max_connections");
 	if (it_mc != variables.end()) maxconn = atoi(it_mc->second.c_str());
+
+	int ttl = 3600;
+	auto it_ttl = variables.find("okta_cache_ttl");
+	if (it_ttl != variables.end()) ttl = atoi(it_ttl->second.c_str());
 	pthread_rwlock_unlock(&main_lock);
 
 	// --- 4. Populate output params ---
@@ -352,6 +359,17 @@ char* Okta_LDAP_Plugin::lookup(
 	new_entry.max_connections      = maxconn;
 
 	pthread_rwlock_wrlock(&cache_lock);
+	// Bound cache growth: once the cache is large, drop entries whose TTL elapsed.
+	if (auth_cache.size() >= OKTA_LDAP_CACHE_MAX_ENTRIES) {
+		time_t now = time(NULL);
+		for (auto it = auth_cache.begin(); it != auth_cache.end(); ) {
+			if ((now - it->second.cached_at) >= ttl) {
+				it = auth_cache.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
 	auth_cache[uname] = std::move(new_entry);
 	pthread_rwlock_unlock(&cache_lock);
 
@@ -487,9 +505,10 @@ bool Okta_LDAP_Plugin::set_variable(char *name, char *value) {
 // LDAP Mapping table management
 // -----------------------------------------------------------------------
 
-void Okta_LDAP_Plugin::load_mysql_ldap_mapping(SQLite3_result *result) {
-	// Caller holds wrlock
-	ldap_mapping.clear();
+// Load a SQLite3 resultset (priority, frontend_entity, backend_entity, comment)
+// into a mapping vector, sorted ascending by priority. Caller holds wrlock.
+static void load_ldap_mapping_into(std::vector<LDAPMappingEntry>& mapping, SQLite3_result *result) {
+	mapping.clear();
 
 	if (!result) return;
 
@@ -500,25 +519,25 @@ void Okta_LDAP_Plugin::load_mysql_ldap_mapping(SQLite3_result *result) {
 		entry.frontend_entity = row->fields[1] ? row->fields[1] : "";
 		entry.backend_entity = row->fields[2] ? row->fields[2] : "";
 		entry.comment = (row->cnt > 3 && row->fields[3]) ? row->fields[3] : "";
-		ldap_mapping.push_back(entry);
+		mapping.push_back(entry);
 	}
 
 	// Sort by priority (ascending)
-	std::sort(ldap_mapping.begin(), ldap_mapping.end(),
+	std::sort(mapping.begin(), mapping.end(),
 		[](const LDAPMappingEntry& a, const LDAPMappingEntry& b) {
 			return a.priority < b.priority;
 		});
 }
 
-SQLite3_result* Okta_LDAP_Plugin::dump_table_mysql_ldap_mapping() {
-	// Caller holds rdlock or wrlock
+// Dump a mapping vector into a 4-column SQLite3_result. Caller holds rdlock or wrlock.
+static SQLite3_result* dump_ldap_mapping(const std::vector<LDAPMappingEntry>& mapping) {
 	SQLite3_result *result = new SQLite3_result(4);
 	result->add_column_definition(SQLITE_INTEGER, "priority");
 	result->add_column_definition(SQLITE_TEXT, "frontend_entity");
 	result->add_column_definition(SQLITE_TEXT, "backend_entity");
 	result->add_column_definition(SQLITE_TEXT, "comment");
 
-	for (const auto& entry : ldap_mapping) {
+	for (const auto& entry : mapping) {
 		char priority_buf[16];
 		snprintf(priority_buf, sizeof(priority_buf), "%d", entry.priority);
 		char *fields[4];
@@ -532,19 +551,36 @@ SQLite3_result* Okta_LDAP_Plugin::dump_table_mysql_ldap_mapping() {
 	return result;
 }
 
+void Okta_LDAP_Plugin::load_mysql_ldap_mapping(SQLite3_result *result) {
+	// Caller holds wrlock
+	load_ldap_mapping_into(mysql_ldap_mapping, result);
+}
+
+void Okta_LDAP_Plugin::load_pgsql_ldap_mapping(SQLite3_result *result) {
+	// Caller holds wrlock
+	load_ldap_mapping_into(pgsql_ldap_mapping, result);
+}
+
+SQLite3_result* Okta_LDAP_Plugin::dump_table_mysql_ldap_mapping() {
+	// Caller holds rdlock or wrlock
+	return dump_ldap_mapping(mysql_ldap_mapping);
+}
+
 SQLite3_result* Okta_LDAP_Plugin::dump_table_pgsql_ldap_mapping() {
-	// Shared mapping — same data as mysql_ldap_mapping
-	return dump_table_mysql_ldap_mapping();
+	// Caller holds rdlock or wrlock
+	return dump_ldap_mapping(pgsql_ldap_mapping);
 }
 
 uint64_t Okta_LDAP_Plugin::get_ldap_mapping_runtime_checksum() {
-	// Simple checksum based on mapping contents
+	// Simple additive hash over both protocol mappings — not cryptographic,
+	// just for cluster-sync change detection.
 	uint64_t hash = 0;
-	for (const auto& entry : ldap_mapping) {
-		// Simple additive hash — not cryptographic, just for cluster sync
-		for (char c : entry.frontend_entity) hash = hash * 31 + c;
-		for (char c : entry.backend_entity) hash = hash * 31 + c;
-		hash = hash * 31 + entry.priority;
+	for (const auto* mapping : { &mysql_ldap_mapping, &pgsql_ldap_mapping }) {
+		for (const auto& entry : *mapping) {
+			for (char c : entry.frontend_entity) hash = hash * 31 + c;
+			for (char c : entry.backend_entity) hash = hash * 31 + c;
+			hash = hash * 31 + entry.priority;
+		}
 	}
 	return hash;
 }

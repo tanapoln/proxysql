@@ -32,6 +32,7 @@ public:
 	virtual bool set_variable(char *name, char *value) {return false;};
 
 	virtual void load_mysql_ldap_mapping(SQLite3_result *result) {};
+	virtual void load_pgsql_ldap_mapping(SQLite3_result *result) {};
 	virtual SQLite3_result * dump_table_mysql_ldap_mapping() { return NULL; };
 	virtual SQLite3_result * dump_table_pgsql_ldap_mapping() { return NULL; };
 	virtual uint64_t get_ldap_mapping_runtime_checksum() { return 0; };

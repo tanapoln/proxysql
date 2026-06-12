@@ -1893,10 +1893,15 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 					char *error = NULL;
 					int cols = 0, affected_rows = 0;
 					SQLite3_result *rs = NULL;
+					// Escape the (client-supplied) username before interpolating it into
+					// SQL to prevent injection. An exact mapping always wins over the
+					// '@everyone' catch-all regardless of its priority value.
+					char *esc_user = escape_string_single_quotes((char*)vars1.user, false);
 					char query[512];
 					snprintf(query, sizeof(query),
-						"SELECT backend_entity FROM mysql_ldap_mapping WHERE frontend_entity IN ('%s','@everyone') ORDER BY priority LIMIT 1",
-						(const char*)vars1.user);
+						"SELECT backend_entity FROM mysql_ldap_mapping WHERE frontend_entity IN ('%s','@everyone') ORDER BY (frontend_entity='@everyone'), priority LIMIT 1",
+						esc_user);
+					if (esc_user != (char*)vars1.user) free(esc_user);
 					GloAdmin->admindb->execute_statement(query, &error, &cols, &affected_rows, &rs);
 					if (rs && rs->rows_count > 0) {
 						resolved_backend_user = strdup(rs->rows[0]->fields[0]);
@@ -1946,6 +1951,7 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 						ret=true;
 					} else {
 						proxy_error("Unable to load credentials for backend user %s , associated to LDAP user %s\n", mysql_backend, vars1.user);
+						ret=false;
 					}
 
 					free_account_details(acct);
@@ -1957,6 +1963,13 @@ void MySQL_Protocol::PPHR_5passwordFalse_auth2(
 				if (backend_username) free(backend_username);
 				backend_username = NULL;
 				// Free LDAP-allocated strings if ownership was not transferred to the session
+				if (attr1.default_schema) { free(attr1.default_schema); attr1.default_schema = NULL; }
+				if (attr1.attributes) { free(attr1.attributes); attr1.attributes = NULL; }
+			} else {
+				// Password returned by the LDAP plugin did not match the client's
+				// (only possible with a non-default plugin). Free LDAP-allocated
+				// strings not transferred to the session so they don't leak.
+				if (backend_username) { free(backend_username); backend_username = NULL; }
 				if (attr1.default_schema) { free(attr1.default_schema); attr1.default_schema = NULL; }
 				if (attr1.attributes) { free(attr1.attributes); attr1.attributes = NULL; }
 			}

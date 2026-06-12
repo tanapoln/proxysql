@@ -1095,10 +1095,15 @@ EXECUTION_STATE PgSQL_Protocol::process_handshake_response_packet(unsigned char*
 					char *error = NULL;
 					int cols = 0, affected_rows = 0;
 					SQLite3_result *rs = NULL;
+					// Escape the (client-supplied) username before interpolating it into
+					// SQL to prevent injection. An exact mapping always wins over the
+					// '@everyone' catch-all regardless of its priority value.
+					char *esc_user = escape_string_single_quotes(user, false);
 					char query[512];
 					snprintf(query, sizeof(query),
-						"SELECT backend_entity FROM pgsql_ldap_mapping WHERE frontend_entity IN ('%s','@everyone') ORDER BY priority LIMIT 1",
-						user);
+						"SELECT backend_entity FROM pgsql_ldap_mapping WHERE frontend_entity IN ('%s','@everyone') ORDER BY (frontend_entity='@everyone'), priority LIMIT 1",
+						esc_user);
+					if (esc_user != user) free(esc_user);
 					GloAdmin->admindb->execute_statement(query, &error, &cols, &affected_rows, &rs);
 					if (rs && rs->rows_count > 0) {
 						resolved_backend_user = strdup(rs->rows[0]->fields[0]);
