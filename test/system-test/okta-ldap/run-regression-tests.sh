@@ -88,6 +88,16 @@ pgsql_ldap() {
 
 set_ldap_var() { run_admin "SET $1=$2" >/dev/null 2>&1; }
 
+# Double single quotes so a username/value is safe inside a single-quoted SQL
+# literal (needed because a test user contains an apostrophe).
+sqlq() { local s="$1"; printf '%s' "${s//\'/\'\'}"; }
+
+# A login was rejected if the client got an auth error rather than the row.
+# MySQL's rejection text ("ERROR 1045 ... Access denied") contains a digit, so we
+# must key off the error markers, not the absence of "1".
+is_rejected()  { [[ "$1" == *denied* || "$1" == *ERROR* || "$1" == *FATAL* || "$1" == *failed* ]]; }
+is_query_ok()  { ! is_rejected "$1" && [[ "$1" == *"1"* ]]; }
+
 reset_mappings() {
     run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
     run_admin "DELETE FROM pgsql_ldap_mapping" >/dev/null 2>&1
@@ -96,11 +106,11 @@ reset_mappings() {
 }
 
 map_mysql() { # priority frontend backend
-    run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES ($1, '$2', '$3', 'regression')" >/dev/null 2>&1
+    run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES ($1, '$(sqlq "$2")', '$3', 'regression')" >/dev/null 2>&1
     run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
 }
 map_pgsql() { # priority frontend backend
-    run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES ($1, '$2', '$3', 'regression')" >/dev/null 2>&1
+    run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES ($1, '$(sqlq "$2")', '$3', 'regression')" >/dev/null 2>&1
     run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
 }
 
@@ -147,13 +157,13 @@ map_mysql 999 '@everyone' "$MYSQL_BACKEND"
 map_pgsql 999 '@everyone' "$PGSQL_BACKEND"
 
 out=$(mysql_ldap "$ALICE" "$ALICE_PASS" "SELECT 1" || true)
-if [[ "$out" == *"1"* ]]; then pass "MySQL: alice binds against local LDAP and queries"; else fail "MySQL: alice LDAP auth failed" "$out"; fi
+if is_query_ok "$out"; then pass "MySQL: alice binds against local LDAP and queries"; else fail "MySQL: alice LDAP auth failed" "$out"; fi
 
 out=$(pgsql_ldap "$ALICE" "$ALICE_PASS" "testdb" "SELECT 1" || true)
-if [[ "$out" == *"1"* && "$out" != *"FATAL"* ]]; then pass "PgSQL: alice binds against local LDAP and queries"; else fail "PgSQL: alice LDAP auth failed" "$out"; fi
+if is_query_ok "$out"; then pass "PgSQL: alice binds against local LDAP and queries"; else fail "PgSQL: alice LDAP auth failed" "$out"; fi
 
 out=$(mysql_ldap "$ALICE" "WrongPass!" "SELECT 1" || true)
-if [[ "$out" != *"1"* ]]; then pass "MySQL: wrong password rejected"; else fail "MySQL: wrong password was accepted" "$out"; fi
+if is_rejected "$out"; then pass "MySQL: wrong password rejected"; else fail "MySQL: wrong password was accepted" "$out"; fi
 
 # ===========================================================================
 section "Phase 3: SQL injection / username escaping (#3)"
@@ -170,7 +180,7 @@ run_admin "LOAD LDAP VARIABLES TO RUNTIME" >/dev/null 2>&1
 map_mysql 100 "$OBRIEN" "$MYSQL_BACKEND"
 
 out=$(mysql_ldap "$OBRIEN" "$OBRIEN_PASS" "SELECT 1" || true)
-if [[ "$out" == *"1"* ]]; then
+if is_query_ok "$out"; then
     pass "MySQL: username with apostrophe resolves via its exact (escaped) mapping"
 else
     fail "MySQL: apostrophe username failed (escaping regression?)" "$out"
@@ -180,7 +190,7 @@ fi
 # This proves the default really is unusable, so o'brien's success above came
 # from its exact mapping rather than from the fallback.
 out=$(mysql_ldap "$ALICE" "$ALICE_PASS" "SELECT 1" || true)
-if [[ "$out" != *"1"* ]]; then
+if is_rejected "$out"; then
     pass "MySQL: unmapped user falls back to (bogus) default and is rejected"
 else
     fail "MySQL: unmapped user unexpectedly authenticated" "$out"
@@ -189,7 +199,7 @@ fi
 # Same escaping check on the PgSQL path.
 map_pgsql 100 "$OBRIEN" "$PGSQL_BACKEND"
 out=$(pgsql_ldap "$OBRIEN" "$OBRIEN_PASS" "testdb" "SELECT 1" || true)
-if [[ "$out" == *"1"* && "$out" != *"FATAL"* ]]; then
+if is_query_ok "$out"; then
     pass "PgSQL: username with apostrophe resolves via its exact (escaped) mapping"
 else
     fail "PgSQL: apostrophe username failed (escaping regression?)" "$out"
@@ -211,7 +221,7 @@ map_mysql 1   '@everyone' '__no_such_backend__'
 map_mysql 100 "$ALICE"    "$MYSQL_BACKEND"
 
 out=$(mysql_ldap "$ALICE" "$ALICE_PASS" "SELECT 1" || true)
-if [[ "$out" == *"1"* ]]; then
+if is_query_ok "$out"; then
     pass "MySQL: exact mapping (priority 100) beats @everyone (priority 1)"
 else
     fail "MySQL: @everyone shadowed the exact mapping (precedence regression)" "$out"
@@ -220,7 +230,7 @@ fi
 # Control: bob is only matched by @everyone -> bogus backend -> rejected. Proves
 # @everyone really points at the bogus backend.
 out=$(mysql_ldap "$BOB" "$BOB_PASS" "SELECT 1" || true)
-if [[ "$out" != *"1"* ]]; then
+if is_rejected "$out"; then
     pass "MySQL: @everyone-only user routed to bogus backend and rejected"
 else
     fail "MySQL: @everyone catch-all unexpectedly authenticated bob" "$out"
@@ -285,7 +295,7 @@ CYCLES=15
 ok_count=0
 for _ in $(seq 1 $CYCLES); do
     out=$(pgsql_ldap "$DAVE" "$DAVE_PASS" "testdb" "SELECT 1" || true)
-    if [[ "$out" == *"1"* && "$out" != *"FATAL"* ]]; then ok_count=$((ok_count+1)); fi
+    if is_query_ok "$out"; then ok_count=$((ok_count+1)); fi
     sleep 0.2
 done
 if [[ $ok_count -eq $CYCLES ]]; then
@@ -315,7 +325,7 @@ reset_mappings
 map_mysql 100 "$CAROL" '__missing_backend__'
 
 out=$(mysql_ldap "$CAROL" "$CAROL_PASS" "SELECT 1" || true)
-if [[ "$out" != *"1"* ]]; then
+if is_rejected "$out"; then
     pass "MySQL: user mapped to a missing backend is rejected"
 else
     fail "MySQL: connection to missing backend unexpectedly succeeded" "$out"
@@ -324,7 +334,7 @@ fi
 # ProxySQL must still be alive and serving after the rejected/failed login.
 map_mysql 100 "$ALICE" "$MYSQL_BACKEND"
 out=$(mysql_ldap "$ALICE" "$ALICE_PASS" "SELECT 1" || true)
-if [[ "$out" == *"1"* ]]; then
+if is_query_ok "$out"; then
     pass "ProxySQL still serves valid logins after the rejected one (no crash)"
 else
     fail "ProxySQL not serving after the rejected login" "$out"
