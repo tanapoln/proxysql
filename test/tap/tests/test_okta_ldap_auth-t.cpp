@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
 		plugin_path = "binaries/proxysql_okta_ldap_auth.dylib";
 	}
 
-	plan(42);
+	plan(45);
 
 	// ===================================================================
 	// 1. Load plugin via dlopen
@@ -433,6 +433,54 @@ int main(int argc, char** argv) {
 		plugin->decrease_frontend_user_connections((char*)u);
 		plugin->decrease_frontend_user_connections((char*)u);
 		plugin->set_variable((char*)"okta_default_max_connections", (char*)"1000");
+	}
+
+	// ===================================================================
+	// 10c. A runtime change to okta_default_max_connections must apply to an
+	// already-tracked user on its next connection. The per-user cap was
+	// previously initialized lazily and then frozen, so changing the global
+	// default (and LOAD LDAP VARIABLES TO RUNTIME) had no effect on users that
+	// had already connected once.
+	// ===================================================================
+	{
+		const char *u = "recap_user@co.com";
+		int mc1 = 0, mc2 = 0;
+
+		plugin->set_variable((char*)"okta_default_max_connections", (char*)"5");
+		plugin->increase_frontend_user_connections((char*)u, &mc1);   // tracked at 5
+		ok(mc1 == 5, "initial max_connections reported as 5 (got %d)", mc1);
+
+		plugin->set_variable((char*)"okta_default_max_connections", (char*)"10");
+		plugin->increase_frontend_user_connections((char*)u, &mc2);   // must pick up 10
+		ok(mc2 == 10,
+			"runtime max_connections change applies to an already-tracked user (got %d, expected 10)", mc2);
+
+		plugin->decrease_frontend_user_connections((char*)u);
+		plugin->decrease_frontend_user_connections((char*)u);
+		plugin->set_variable((char*)"okta_default_max_connections", (char*)"1000");
+	}
+
+	// ===================================================================
+	// 10d. conn_tracker must not grow without bound. LDAP users are discovered
+	// dynamically and their entries are kept after disconnect (so idle-but-recent
+	// users still appear in stats_mysql_users), but entries with no active
+	// connections must be reclaimed once the table gets large. Connect+disconnect
+	// many DISTINCT users (each left at 0 active connections); the tracked count
+	// must stay well below the number of distinct users seen.
+	// N must exceed the plugin's internal cap (OKTA_LDAP_CONN_TRACKER_MAX_ENTRIES).
+	// ===================================================================
+	{
+		const int N = 10050;
+		char ubuf[64];
+		for (int i = 0; i < N; i++) {
+			snprintf(ubuf, sizeof(ubuf), "growth_%d@co.com", i);
+			plugin->increase_frontend_user_connections(ubuf, NULL);
+			plugin->decrease_frontend_user_connections(ubuf);   // leaves entry at 0 active
+		}
+		auto result = plugin->dump_all_users();
+		int rows = result ? result->rows_count : -1;
+		ok(rows >= 0 && rows < N,
+			"conn_tracker bounded: %d distinct users seen, %d tracked (must be < %d)", N, rows, N);
 	}
 
 	// ===================================================================
