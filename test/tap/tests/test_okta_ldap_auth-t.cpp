@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
 		plugin_path = "binaries/proxysql_okta_ldap_auth.dylib";
 	}
 
-	plan(29);
+	plan(36);
 
 	// ===================================================================
 	// 1. Load plugin via dlopen
@@ -146,15 +146,18 @@ int main(int argc, char** argv) {
 	}
 	ok(var_count >= 9, "At least 9 variables returned (got %d)", var_count);
 
-	// Check that variable names have "ldap-" prefix
-	bool has_prefix = true;
+	// The plugin returns BARE variable names (e.g. "okta_url"); the ProxySQL
+	// admin framework adds the "ldap-" module prefix when exposing them via
+	// SHOW LDAP VARIABLES / global_variables. Verify that contract here: the
+	// names must be bare "okta_*" and must NOT already carry the "ldap-" prefix.
+	bool names_are_bare = true;
 	for (int i = 0; i < var_count; i++) {
-		if (strncmp(varlist[i], "ldap-", 5) != 0) {
-			has_prefix = false;
-			diag("Variable '%s' missing 'ldap-' prefix", varlist[i]);
+		if (strncmp(varlist[i], "ldap-", 5) == 0 || strncmp(varlist[i], "okta_", 5) != 0) {
+			names_are_bare = false;
+			diag("Variable '%s' is not a bare 'okta_*' name", varlist[i]);
 		}
 	}
-	ok(has_prefix, "All variable names have 'ldap-' prefix");
+	ok(names_are_bare, "Variable names are bare 'okta_*' (admin framework adds the 'ldap-' prefix)");
 
 	// Free variable list
 	for (int i = 0; i < var_count; i++) free(varlist[i]);
@@ -163,38 +166,39 @@ int main(int argc, char** argv) {
 	// ===================================================================
 	// 6. Admin variables — has_variable
 	// ===================================================================
-	ok(plugin->has_variable("ldap-okta_url"), "has_variable('ldap-okta_url') returns true");
-	ok(plugin->has_variable("ldap-okta_cache_ttl"), "has_variable('ldap-okta_cache_ttl') returns true");
-	ok(plugin->has_variable("okta_enabled"), "has_variable('okta_enabled') returns true (without prefix)");
-	ok(!plugin->has_variable("ldap-nonexistent"), "has_variable('ldap-nonexistent') returns false");
+	// has_variable operates on bare names — the admin framework strips "ldap-".
+	ok(plugin->has_variable("okta_url"), "has_variable('okta_url') returns true");
+	ok(plugin->has_variable("okta_cache_ttl"), "has_variable('okta_cache_ttl') returns true");
+	ok(!plugin->has_variable("ldap-okta_url"), "has_variable('ldap-okta_url') returns false (prefix is stripped by framework, not stored)");
+	ok(!plugin->has_variable("nonexistent"), "has_variable('nonexistent') returns false");
 
 	// ===================================================================
 	// 7. Admin variables — get/set
 	// ===================================================================
 	{
-		char *val = plugin->get_variable((char*)"ldap-okta_cache_ttl");
+		char *val = plugin->get_variable((char*)"okta_cache_ttl");
 		ok(val != NULL && strcmp(val, "3600") == 0,
 			"Default okta_cache_ttl is '3600' (got '%s')", val ? val : "NULL");
 		if (val) free(val);
 	}
 
 	{
-		bool set_ok = plugin->set_variable((char*)"ldap-okta_url", (char*)"ldaps://test.ldap.okta.com");
-		ok(set_ok, "set_variable('ldap-okta_url', 'ldaps://test.ldap.okta.com') returns true");
+		bool set_ok = plugin->set_variable((char*)"okta_url", (char*)"ldaps://test.ldap.okta.com");
+		ok(set_ok, "set_variable('okta_url', 'ldaps://test.ldap.okta.com') returns true");
 
-		char *val = plugin->get_variable((char*)"ldap-okta_url");
+		char *val = plugin->get_variable((char*)"okta_url");
 		ok(val != NULL && strcmp(val, "ldaps://test.ldap.okta.com") == 0,
 			"get_variable returns updated value '%s'", val ? val : "NULL");
 		if (val) free(val);
 	}
 
 	{
-		bool set_fail = plugin->set_variable((char*)"ldap-nonexistent", (char*)"value");
+		bool set_fail = plugin->set_variable((char*)"nonexistent", (char*)"value");
 		ok(!set_fail, "set_variable for unknown variable returns false");
 	}
 
 	{
-		char *val = plugin->get_variable((char*)"ldap-okta_default_backend_user");
+		char *val = plugin->get_variable((char*)"okta_default_backend_user");
 		ok(val != NULL && strcmp(val, "okta_shared") == 0,
 			"Default backend user is 'okta_shared' (got '%s')", val ? val : "NULL");
 		if (val) free(val);
@@ -246,6 +250,60 @@ int main(int argc, char** argv) {
 	}
 
 	// ===================================================================
+	// 9b. Per-protocol mapping isolation.
+	// Load DIFFERENT data into the MySQL and PgSQL mapping tables and verify
+	// each dump returns its OWN data. Regression for the shared-vector bug
+	// where the plugin kept a single mapping list, so loading one protocol
+	// clobbered the other and dump_table_pgsql_ldap_mapping() returned MySQL
+	// rows. With a stub SQLite3 this needs no real ProxySQL or LDAP server.
+	// ===================================================================
+	{
+		SQLite3_result *m = make_mapping_result({
+			{100, "alice@company.com", "okta_mysql", "mysql only"},
+		});
+		SQLite3_result *p = make_mapping_result({
+			{100, "alice@company.com", "okta_pgsql",  "pgsql only"},
+			{200, "bob@company.com",   "okta_pgsql2", "pgsql only"},
+		});
+		plugin->wrlock();
+		plugin->load_mysql_ldap_mapping(m);
+		plugin->load_pgsql_ldap_mapping(p);   // must NOT clobber the MySQL table
+		plugin->wrunlock();
+		delete m;
+		delete p;
+
+		plugin->wrlock();
+		SQLite3_result *dm = plugin->dump_table_mysql_ldap_mapping();
+		SQLite3_result *dp = plugin->dump_table_pgsql_ldap_mapping();
+		plugin->wrunlock();
+
+		ok(dm && dm->rows_count == 1,
+			"MySQL mapping dump has 1 row (got %d)", dm ? dm->rows_count : -1);
+		ok(dp && dp->rows_count == 2,
+			"PgSQL mapping dump has 2 rows (got %d) — not clobbered by the MySQL load",
+			dp ? dp->rows_count : -1);
+
+		// The same frontend user must resolve to a DIFFERENT backend per protocol.
+		const char *mysql_be = (dm && dm->rows_count >= 1) ? dm->rows[0]->fields[2] : "";
+		const char *pgsql_be = "";
+		if (dp) {
+			for (auto *r : dp->rows) {
+				if (r->fields[1] && strcmp(r->fields[1], "alice@company.com") == 0) {
+					pgsql_be = r->fields[2];
+				}
+			}
+		}
+		ok(mysql_be && strcmp(mysql_be, "okta_mysql") == 0,
+			"MySQL dump resolves alice -> okta_mysql (got '%s')", mysql_be ? mysql_be : "NULL");
+		ok(pgsql_be && strcmp(pgsql_be, "okta_pgsql") == 0,
+			"PgSQL dump resolves alice -> okta_pgsql (got '%s') — isolated from MySQL table",
+			pgsql_be ? pgsql_be : "NULL");
+
+		if (dm) delete dm;
+		if (dp) delete dp;
+	}
+
+	// ===================================================================
 	// 10. Frontend connection tracking
 	// ===================================================================
 	{
@@ -271,6 +329,40 @@ int main(int argc, char** argv) {
 		// Decrease all to clean up
 		plugin->decrease_frontend_user_connections((char*)"testuser@co.com");
 		plugin->decrease_frontend_user_connections((char*)"testuser@co.com");
+	}
+
+	// ===================================================================
+	// 10b. Connection limit enforcement + decrement accounting.
+	// Set a small per-user max, exhaust it, confirm the over-limit attempt
+	// reports no free slots, then confirm a decrease frees a slot back up.
+	// This is the plugin-side guarantee behind the PgSQL connection-counter
+	// bug: if a closed connection is never decremented, slots leak and the
+	// user is eventually locked out even though nothing is connected.
+	// ===================================================================
+	{
+		plugin->set_variable((char*)"okta_default_max_connections", (char*)"3");
+		const char *u = "limit_user@co.com";
+
+		int f1 = plugin->increase_frontend_user_connections((char*)u, NULL); // used 1, free 2
+		int f2 = plugin->increase_frontend_user_connections((char*)u, NULL); // used 2, free 1
+		int f3 = plugin->increase_frontend_user_connections((char*)u, NULL); // used 3, free 0
+		ok(f1 == 2 && f2 == 1 && f3 == 0,
+			"Connections count down to the limit (free: %d,%d,%d, expected 2,1,0)", f1, f2, f3);
+
+		int f4 = plugin->increase_frontend_user_connections((char*)u, NULL); // used 4, free -1
+		ok(f4 < 0, "Over-limit connection reports no free slots (free=%d, expected <0)", f4);
+
+		// Release the over-limit attempt and one real connection; a fresh
+		// connection must now find a slot again — proving decrements are counted.
+		plugin->decrease_frontend_user_connections((char*)u);
+		plugin->decrease_frontend_user_connections((char*)u);
+		int f5 = plugin->increase_frontend_user_connections((char*)u, NULL);
+		ok(f5 >= 0, "A slot frees up after decrease (free=%d, expected >=0)", f5);
+
+		// Clean up and restore the default.
+		plugin->decrease_frontend_user_connections((char*)u);
+		plugin->decrease_frontend_user_connections((char*)u);
+		plugin->set_variable((char*)"okta_default_max_connections", (char*)"1000");
 	}
 
 	// ===================================================================
@@ -316,7 +408,7 @@ int main(int argc, char** argv) {
 	// 13. lookup with plugin disabled — should return NULL
 	// ===================================================================
 	{
-		plugin->set_variable((char*)"ldap-okta_enabled", (char*)"false");
+		plugin->set_variable((char*)"okta_enabled", (char*)"false");
 
 		bool use_ssl = false;
 		int hg = -1;
@@ -336,7 +428,7 @@ int main(int argc, char** argv) {
 		ok(result == NULL, "lookup() returns NULL when plugin is disabled");
 
 		// Re-enable
-		plugin->set_variable((char*)"ldap-okta_enabled", (char*)"true");
+		plugin->set_variable((char*)"okta_enabled", (char*)"true");
 	}
 
 	// ===================================================================

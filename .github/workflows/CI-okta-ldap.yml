@@ -1,0 +1,116 @@
+name: CI-okta-ldap
+
+# Tests for the Okta LDAP authentication plugin.
+#
+#  * unit        — fast, no Docker. Builds the plugin as a shared library and
+#                  runs the standalone TAP unit test (stubbed SQLite3). Gates
+#                  every push/PR that touches the plugin.
+#  * integration — real dependencies. Builds the ProxySQL image and runs the
+#                  hermetic regression suite against real MySQL, PostgreSQL and a
+#                  local OpenLDAP server (no external Okta org required).
+#
+# Only triggered by changes to the plugin or its tests so the heavy integration
+# build does not run on unrelated PRs.
+
+on:
+  push:
+    paths:
+      - 'lib/Okta_LDAP_Plugin.cpp'
+      - 'lib/Okta_LDAP_Plugin.mk'
+      - 'include/Okta_LDAP_Plugin.h'
+      - 'include/MySQL_LDAP_Authentication.hpp'
+      - 'lib/MySQL_Protocol.cpp'
+      - 'lib/PgSQL_Protocol.cpp'
+      - 'lib/PgSQL_Session.cpp'
+      - 'lib/MySQL_Authentication.cpp'
+      - 'lib/ProxySQL_Admin.cpp'
+      - 'test/tap/tests/test_okta_ldap_auth-t.cpp'
+      - 'test/system-test/okta-ldap/**'
+      - '.github/workflows/CI-okta-ldap.yml'
+  pull_request:
+    paths:
+      - 'lib/Okta_LDAP_Plugin.cpp'
+      - 'lib/Okta_LDAP_Plugin.mk'
+      - 'include/Okta_LDAP_Plugin.h'
+      - 'include/MySQL_LDAP_Authentication.hpp'
+      - 'lib/MySQL_Protocol.cpp'
+      - 'lib/PgSQL_Protocol.cpp'
+      - 'lib/PgSQL_Session.cpp'
+      - 'lib/MySQL_Authentication.cpp'
+      - 'lib/ProxySQL_Admin.cpp'
+      - 'test/tap/tests/test_okta_ldap_auth-t.cpp'
+      - 'test/system-test/okta-ldap/**'
+      - '.github/workflows/CI-okta-ldap.yml'
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Plugin unit test (stubbed SQLite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ libldap2-dev libssl-dev
+
+      - name: Build SQLite amalgamation (for the test stub's sqlite3 symbols)
+        run: |
+          set -euo pipefail
+          tarball=$(ls deps/sqlite3/sqlite-amalgamation-*.tar.gz | head -1)
+          echo "Using $tarball"
+          mkdir -p build/sqlite
+          tar -xzf "$tarball" -C build/sqlite --strip-components=1
+          gcc -O1 -DSQLITE_OMIT_LOAD_EXTENSION -c build/sqlite/sqlite3.c -o build/sqlite3.o
+
+      - name: Build plugin shared library
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -DCXX17 -fPIC -O2 -Wall -Iinclude -Ibuild/sqlite \
+            -c lib/Okta_LDAP_Plugin.cpp -o build/okta.o
+          g++ -shared -Wl,--allow-shlib-undefined -o build/proxysql_okta_ldap_auth.so \
+            build/okta.o -lldap -llber -lssl -lcrypto -lpthread
+
+      - name: Build and run the unit test
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -DCXX17 -rdynamic -Iinclude -Ibuild/sqlite \
+            test/tap/tests/test_okta_ldap_auth-t.cpp \
+            test/tap/tests/sqlite3db_stub.cpp \
+            build/sqlite3.o -ldl -lpthread -o build/test_okta_ldap_auth-t
+          ./build/test_okta_ldap_auth-t build/proxysql_okta_ldap_auth.so | tee build/tap.out
+          echo "----"
+          if grep -q '^not ok' build/tap.out; then
+            echo "Unit test reported failures"; exit 1
+          fi
+          grep -q 'All tests completed' build/tap.out || { echo "Unit test did not complete"; exit 1; }
+
+  integration:
+    name: Integration (real MySQL + PgSQL + OpenLDAP)
+    runs-on: ubuntu-latest
+    # Heavy: builds ProxySQL from source inside Docker. Skip on plain pushes.
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: test/system-test/okta-ldap
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ProxySQL + Okta LDAP plugin image
+        run: docker compose build proxysql
+
+      - name: Start backends, OpenLDAP and ProxySQL
+        run: docker compose up -d openldap mysql mysql2 pgsql proxysql
+
+      - name: Run hermetic regression suite
+        run: docker compose run --rm test-regression
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs --tail=200 openldap proxysql || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v || true

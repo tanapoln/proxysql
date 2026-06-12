@@ -53,8 +53,27 @@ services:
       timeout: 5s
       retries: 30
 
+  # --- Local OpenLDAP server (hermetic stand-in for Okta's LDAP interface) ---
+  # Used by run-regression-tests.sh so the suite needs no external Okta org.
+  openldap:
+    image: osixia/openldap:1.5.0
+    command: ["--copy-service", "--loglevel", "warning"]
+    environment:
+      LDAP_ORGANISATION: "Example Inc"
+      LDAP_DOMAIN: "example.com"
+      LDAP_ADMIN_PASSWORD: "adminpass"
+    volumes:
+      - ./ldap/bootstrap.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom/01-users.ldif:ro
+    healthcheck:
+      # Confirms the seed data has been imported before tests start.
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost:389 -b 'ou=users,dc=example,dc=com' -D 'cn=admin,dc=example,dc=com' -w adminpass '(uid=alice@example.com)' uid | grep -q 'uid: alice@example.com'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
   # --- ProxySQL with Okta LDAP plugin ---
   proxysql:
+    image: okta-ldap-proxysql
     build:
       context: ../../..
       dockerfile: test/system-test/okta-ldap/Dockerfile.proxysql
@@ -128,6 +147,27 @@ services:
     volumes:
       - ./run-pgsql-db-whitelist-tests.sh:/opt/run-pgsql-db-whitelist-tests.sh:ro
     entrypoint: ["bash", "/opt/run-pgsql-db-whitelist-tests.sh"]
+
+  # --- Hermetic regression test runner (local LDAP, no external Okta) ---
+  # Run with:  docker compose run --rm test-regression
+  test-regression:
+    image: okta-ldap-proxysql
+    depends_on:
+      proxysql:
+        condition: service_healthy
+      openldap:
+        condition: service_healthy
+    environment:
+      PROXYSQL_HOST: proxysql
+      PROXYSQL_ADMIN_PORT: "6032"
+      PROXYSQL_MYSQL_PORT: "6033"
+      PROXYSQL_PGSQL_PORT: "6133"
+      LDAP_URL: "ldap://openldap:389"
+      LDAP_BASE_DN: "dc=example,dc=com"
+      LDAP_DN_FORMAT: "uid=%s,ou=users,%s"
+    volumes:
+      - ./run-regression-tests.sh:/opt/run-regression-tests.sh:ro
+    entrypoint: ["bash", "/opt/run-regression-tests.sh"]
 
   # --- Sysbench performance test runner ---
   test-sysbench:

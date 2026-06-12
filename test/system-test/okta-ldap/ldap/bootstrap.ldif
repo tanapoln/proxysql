@@ -1,0 +1,62 @@
+# Seed data for the local OpenLDAP server used by the hermetic regression suite.
+#
+# This replaces the dependency on a live external Okta org: the plugin performs
+# an LDAP simple bind against this server exactly as it would against Okta's
+# LDAP interface. The DN format the plugin builds is:
+#
+#     uid=<username>,ou=users,dc=example,dc=com
+#
+# so every test user below is a uid under ou=users. userPassword is stored in
+# cleartext purely to keep the test fixture simple — slapd still validates it on
+# bind. The base entry (dc=example,dc=com) and cn=admin are created by the
+# container from LDAP_DOMAIN / LDAP_ADMIN_PASSWORD; these entries are layered on
+# top via the custom bootstrap mechanism.
+
+dn: ou=users,dc=example,dc=com
+objectClass: organizationalUnit
+ou: users
+
+# Standard test user.
+dn: uid=alice@example.com,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+cn: Alice Example
+sn: Example
+uid: alice@example.com
+userPassword: alicepass
+
+# Second user, used to prove that @everyone (catch-all) routing is distinct from
+# an exact mapping.
+dn: uid=bob@example.com,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+cn: Bob Example
+sn: Example
+uid: bob@example.com
+userPassword: bobpass
+
+# Username containing a single quote. Authenticating as this user exercises the
+# SQL-escaping path in the mysql_ldap_mapping / pgsql_ldap_mapping lookup query.
+dn: uid=o'brien@example.com,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+cn: O'Brien Example
+sn: Example
+uid: o'brien@example.com
+userPassword: obrienpass
+
+# User used to prove that mapping to a non-existent backend is rejected cleanly.
+dn: uid=carol@example.com,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+cn: Carol Example
+sn: Example
+uid: carol@example.com
+userPassword: carolpass
+
+# Dedicated user for the connection-counter test. It is deliberately not used by
+# any other phase: the plugin fixes a user's max-connections cap on the FIRST
+# connect, so this user must connect for the first time only after the small cap
+# has been configured.
+dn: uid=dave@example.com,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+cn: Dave Example
+sn: Example
+uid: dave@example.com
+userPassword: davepass
