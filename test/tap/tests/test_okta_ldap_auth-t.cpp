@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
 		plugin_path = "binaries/proxysql_okta_ldap_auth.dylib";
 	}
 
-	plan(41);
+	plan(42);
 
 	// ===================================================================
 	// 1. Load plugin via dlopen
@@ -397,32 +397,37 @@ int main(int argc, char** argv) {
 	}
 
 	// ===================================================================
-	// 10b. Connection limit enforcement + decrement accounting.
-	// Set a small per-user max, exhaust it, confirm the over-limit attempt
-	// reports no free slots, then confirm a decrease frees a slot back up.
-	// This is the plugin-side guarantee behind the PgSQL connection-counter
-	// bug: if a closed connection is never decremented, slots leak and the
-	// user is eventually locked out even though nothing is connected.
+	// 10b. Connection-limit semantics must match MySQL_Authentication:
+	// increase_frontend_user_connections() returns the number of free slots
+	// BEFORE incrementing, increments ONLY when there is room, and when full
+	// returns 0 without incrementing. The caller rejects when the return is
+	// <= 0, so exactly `max` connections are admitted (not max-1), and a
+	// rejected over-limit attempt (which never calls decrease) must not leak
+	// the counter. Regression for the unconditional `current_connections++`.
 	// ===================================================================
 	{
-		plugin->set_variable((char*)"okta_default_max_connections", (char*)"3");
-		const char *u = "limit_user@co.com";
+		plugin->set_variable((char*)"okta_default_max_connections", (char*)"2");
+		const char *u = "cap_user@co.com";
 
-		int f1 = plugin->increase_frontend_user_connections((char*)u, NULL); // used 1, free 2
-		int f2 = plugin->increase_frontend_user_connections((char*)u, NULL); // used 2, free 1
-		int f3 = plugin->increase_frontend_user_connections((char*)u, NULL); // used 3, free 0
-		ok(f1 == 2 && f2 == 1 && f3 == 0,
-			"Connections count down to the limit (free: %d,%d,%d, expected 2,1,0)", f1, f2, f3);
+		int i1 = plugin->increase_frontend_user_connections((char*)u, NULL); // room: 2 free, used->1
+		int i2 = plugin->increase_frontend_user_connections((char*)u, NULL); // room: 1 free, used->2
+		ok(i1 == 2 && i2 == 1,
+			"increase returns free slots before incrementing (got %d,%d, expected 2,1)", i1, i2);
 
-		int f4 = plugin->increase_frontend_user_connections((char*)u, NULL); // used 4, free -1
-		ok(f4 < 0, "Over-limit connection reports no free slots (free=%d, expected <0)", f4);
+		int i3 = plugin->increase_frontend_user_connections((char*)u, NULL); // FULL: 0, no increment
+		ok(i3 == 0,
+			"exactly max=2 admitted; the 3rd reports no free slot (got %d, expected 0)", i3);
 
-		// Release the over-limit attempt and one real connection; a fresh
-		// connection must now find a slot again — proving decrements are counted.
+		int i4 = plugin->increase_frontend_user_connections((char*)u, NULL); // still FULL: 0, no leak
+		ok(i4 == 0,
+			"repeated over-limit attempts stay at 0 — counter does not leak (got %d, expected 0)", i4);
+
+		// Release one real connection; a slot must free up despite the rejected
+		// attempts above (which must not have incremented the counter).
 		plugin->decrease_frontend_user_connections((char*)u);
-		plugin->decrease_frontend_user_connections((char*)u);
-		int f5 = plugin->increase_frontend_user_connections((char*)u, NULL);
-		ok(f5 >= 0, "A slot frees up after decrease (free=%d, expected >=0)", f5);
+		int i5 = plugin->increase_frontend_user_connections((char*)u, NULL);
+		ok(i5 == 1,
+			"a slot frees up after decrease, unaffected by the over-limit attempts (got %d, expected 1)", i5);
 
 		// Clean up and restore the default.
 		plugin->decrease_frontend_user_connections((char*)u);

@@ -428,8 +428,16 @@ int Okta_LDAP_Plugin::increase_frontend_user_connections(char *username, int *mc
 	if (tracker.max_connections == 0) {
 		tracker.max_connections = default_max;
 	}
-	tracker.current_connections++;
-	int free_conns = tracker.max_connections - tracker.current_connections;
+	// Match MySQL_Authentication::increase_frontend_user_connections: report the
+	// free slots BEFORE admitting this connection and only increment when there
+	// is room. When full, return 0 without incrementing, so that exactly
+	// max_connections are admitted (not max-1) and a rejected over-limit attempt
+	// — which never calls decrease — cannot leak the counter.
+	int free_conns = 0;
+	if (tracker.max_connections > tracker.current_connections) {
+		free_conns = tracker.max_connections - tracker.current_connections;
+		tracker.current_connections++;
+	}
 	if (mc) *mc = tracker.max_connections;
 	pthread_rwlock_unlock(&conn_lock);
 
