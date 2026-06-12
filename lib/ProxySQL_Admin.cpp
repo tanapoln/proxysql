@@ -1533,7 +1533,7 @@ bool ProxySQL_Admin::GenericRefreshStatistics(const char *query_no_space, unsign
 					runtime_mysql_ldap_mapping=true; refresh=true;
 				}
 				if (strstr(query_no_space, "runtime_pgsql_ldap_mapping")) {
-					runtime_mysql_ldap_mapping = true; refresh = true;
+					runtime_pgsql_ldap_mapping = true; refresh = true;
 				}
 			}
 			if (strstr(query_no_space,"runtime_mysql_query_rules")) {
@@ -5893,7 +5893,7 @@ void ProxySQL_Admin::load_pgsql_ldap_mapping_to_runtime() {
 	if (error) {
 		proxy_error("Error on %s : %s\n", query, error);
 	} else {
-		GloMyLdapAuth->load_mysql_ldap_mapping(resultset);
+		GloMyLdapAuth->load_pgsql_ldap_mapping(resultset);
 	}
 	if (resultset) delete resultset;
 	// Populate runtime_pgsql_ldap_mapping admin table

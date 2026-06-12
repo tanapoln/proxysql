@@ -895,7 +895,7 @@ EXECUTION_STATE PgSQL_Protocol::process_handshake_response_packet(unsigned char*
 			}
 		}
 
-		if (attributes) free(attributes);
+		if (attributes) { free(attributes); attributes = NULL; }
 	}
 
 	if (password) {
@@ -1088,24 +1088,10 @@ EXECUTION_STATE PgSQL_Protocol::process_handshake_response_packet(unsigned char*
 				// LDAP auth succeeded — resolve backend pgsql user.
 				// The plugin cache may return a MySQL-specific backend user,
 				// so we resolve from pgsql_ldap_mapping via the admin interface.
-				char *resolved_backend_user = NULL;
-				{
-					// Query pgsql_ldap_mapping for this frontend user
-					extern ProxySQL_Admin *GloAdmin;
-					char *error = NULL;
-					int cols = 0, affected_rows = 0;
-					SQLite3_result *rs = NULL;
-					char query[512];
-					snprintf(query, sizeof(query),
-						"SELECT backend_entity FROM pgsql_ldap_mapping WHERE frontend_entity IN ('%s','@everyone') ORDER BY priority LIMIT 1",
-						user);
-					GloAdmin->admindb->execute_statement(query, &error, &cols, &affected_rows, &rs);
-					if (rs && rs->rows_count > 0) {
-						resolved_backend_user = strdup(rs->rows[0]->fields[0]);
-					}
-					if (rs) delete rs;
-					if (error) free(error);
-				}
+				// Resolve the backend user from the PgSQL runtime mapping (its own
+				// per-protocol table) — no SQL built from the username, and resolution
+				// reflects LOAD PGSQL LDAP MAPPING TO RUNTIME.
+				char *resolved_backend_user = GloMyLdapAuth->resolve_pgsql_backend((char*)user);
 
 				// Fall back to the plugin's default backend user if no pgsql mapping found
 				const char *pgsql_backend = resolved_backend_user ? resolved_backend_user : (ldap_backend_user ? ldap_backend_user : NULL);
