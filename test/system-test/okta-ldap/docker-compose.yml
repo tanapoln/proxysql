@@ -54,7 +54,7 @@ services:
       retries: 30
 
   # --- Local OpenLDAP server (hermetic stand-in for Okta's LDAP interface) ---
-  # Used by run-regression-tests.sh so the suite needs no external Okta org.
+  # Used by the regression/ suite so it needs no external Okta org.
   openldap:
     image: osixia/openldap:1.5.0
     command: ["--copy-service", "--loglevel", "warning"]
@@ -166,8 +166,8 @@ services:
       LDAP_BASE_DN: "dc=example,dc=com"
       LDAP_DN_FORMAT: "uid=%s,ou=users,%s"
     volumes:
-      - ./run-regression-tests.sh:/opt/run-regression-tests.sh:ro
-    entrypoint: ["bash", "/opt/run-regression-tests.sh"]
+      - ./regression:/opt/regression:ro
+    entrypoint: ["bash", "/opt/regression/run-all.sh"]
 
   # --- Sysbench performance test runner ---
   test-sysbench:
