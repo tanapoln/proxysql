@@ -1975,7 +1975,7 @@ bool admin_handler_command_load_or_save(char *query_no_space, unsigned int query
 			) {
 				proxy_info("Received %s command\n", query_no_space);
 				ProxySQL_Admin *SPA=(ProxySQL_Admin *)pa;
-				SPA->save_mysql_ldap_mapping_runtime_to_database(true);
+				SPA->save_mysql_ldap_mapping_runtime_to_database(false);
 				proxy_debug(PROXY_DEBUG_ADMIN, 4, "Saved mysql ldap mapping from RUNTIME\n");
 				SPA->send_ok_msg_to_client(sess, NULL, 0, query_no_space);
 				return false;
@@ -2034,7 +2034,7 @@ bool admin_handler_command_load_or_save(char *query_no_space, unsigned int query
 			) {
 				proxy_info("Received %s command\n", query_no_space);
 				ProxySQL_Admin *SPA=(ProxySQL_Admin *)pa;
-				SPA->save_pgsql_ldap_mapping_runtime_to_database(true);
+				SPA->save_pgsql_ldap_mapping_runtime_to_database(false);
 				proxy_debug(PROXY_DEBUG_ADMIN, 4, "Saved pgsql ldap mapping from RUNTIME\n");
 				SPA->send_ok_msg_to_client(sess, NULL, 0, query_no_space);
 				return false;

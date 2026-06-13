@@ -361,6 +361,74 @@ else
 fi
 
 # ===========================================================================
+section "Phase 9: saving >=8 LDAP mappings does not crash ProxySQL (#1)"
+# ===========================================================================
+# The bulk-insert path (>=8 rows) bound placeholders with the wrong multiplier
+# and aborted the daemon. Insert 9 mappings, LOAD TO RUNTIME (which bulk-saves to
+# the runtime table), and confirm the runtime table has 9 rows and admin is alive.
+reset_mappings
+for i in $(seq 1 9); do
+    run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES ($((100+i)), 'bulk${i}@example.com', '$MYSQL_BACKEND', 'bulk')" >/dev/null 2>&1
+done
+run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+cnt=$(run_admin "SELECT COUNT(*) FROM runtime_mysql_ldap_mapping")
+if [[ "$cnt" == "9" ]]; then
+    pass "MySQL: 9-row bulk save populated runtime_mysql_ldap_mapping (no crash)"
+else
+    fail "MySQL: bulk save of >=8 mappings crashed/failed" "runtime count='$cnt' (expected 9; empty => ProxySQL aborted)"
+fi
+
+reset_mappings
+for i in $(seq 1 9); do
+    run_admin "INSERT INTO pgsql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES ($((100+i)), 'bulk${i}@example.com', '$PGSQL_BACKEND', 'bulk')" >/dev/null 2>&1
+done
+run_admin "LOAD PGSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+cntp=$(run_admin "SELECT COUNT(*) FROM runtime_pgsql_ldap_mapping")
+if [[ "$cntp" == "9" ]]; then
+    pass "PgSQL: 9-row bulk save populated runtime_pgsql_ldap_mapping (no crash)"
+else
+    fail "PgSQL: bulk save of >=8 mappings crashed/failed" "runtime count='$cntp' (expected 9)"
+fi
+
+alive=$(run_admin "SELECT 1")
+if [[ "$alive" == "1" ]]; then pass "ProxySQL admin still responsive after bulk saves"; else fail "ProxySQL not responsive after bulk saves" "$alive"; fi
+
+# ===========================================================================
+section "Phase 10: SAVE LDAP MAPPING FROM RUNTIME writes the main table (#4)"
+# ===========================================================================
+# SAVE ... FROM RUNTIME must copy the runtime mapping into the persistent main
+# config table (so SAVE TO DISK persists it); it previously wrote the runtime
+# display table, leaving main empty.
+reset_mappings
+run_admin "INSERT INTO mysql_ldap_mapping (priority, frontend_entity, backend_entity, comment) VALUES (100, '$ALICE', '$MYSQL_BACKEND', 'persist')" >/dev/null 2>&1
+run_admin "LOAD MYSQL LDAP MAPPING TO RUNTIME" >/dev/null 2>&1
+run_admin "DELETE FROM mysql_ldap_mapping" >/dev/null 2>&1
+run_admin "SAVE MYSQL LDAP MAPPING FROM RUNTIME" >/dev/null 2>&1
+main_cnt=$(run_admin "SELECT COUNT(*) FROM mysql_ldap_mapping")
+if [[ "$main_cnt" == "1" ]]; then
+    pass "MySQL: SAVE FROM RUNTIME restored the persistent main table (count=1)"
+else
+    fail "MySQL: SAVE FROM RUNTIME did not write the main table" "mysql_ldap_mapping count='$main_cnt' (expected 1)"
+fi
+
+# ===========================================================================
+section "Phase 11: empty password is rejected (#2)"
+# ===========================================================================
+# An empty password must never reach an LDAP simple bind (RFC 4513 unauthenticated
+# bind). ProxySQL must reject it outright. (--password= sends an empty password
+# without prompting.)
+reset_mappings
+map_mysql 100 "$ALICE" "$MYSQL_BACKEND"
+out=$(mysql -h "$PROXYSQL_HOST" -P "$PROXYSQL_MYSQL_PORT" -u "$ALICE" --password= $CLEARTEXT \
+    --connect-timeout=15 -N -B -e "SELECT 1" 2>&1 || true)
+out=$(echo "$out" | grep -v 'mysql: \[Warning\]' || true)
+if is_rejected "$out" || [[ "$out" != *"1"* ]]; then
+    pass "MySQL: empty-password login is rejected"
+else
+    fail "MySQL: empty-password login was ACCEPTED (auth bypass)" "$out"
+fi
+
+# ===========================================================================
 section "Results"
 # ===========================================================================
 echo "  Total:  $TESTS_RUN"

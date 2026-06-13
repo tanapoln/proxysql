@@ -604,7 +604,11 @@ void ProxySQL_Admin::stats___mysql_global() {
 
 	if (GloMyLdapAuth) {
 		resultset=GloMyLdapAuth->SQL3_getStats();
-		sqlite3_bulk_step(statsdb, row_stmt, bulk_stmt, resultset, stats_mysql_global___bind_row);
+		if (resultset) {
+			sqlite3_bulk_step(statsdb, row_stmt, bulk_stmt, resultset, stats_mysql_global___bind_row);
+			delete resultset;
+			resultset=NULL;
+		}
 	}
 
 	if (GloMyQPro) {
