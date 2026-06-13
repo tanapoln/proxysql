@@ -5893,7 +5893,11 @@ void ProxySQL_Admin::load_pgsql_ldap_mapping_to_runtime() {
 	if (error) {
 		proxy_error("Error on %s : %s\n", query, error);
 	} else {
+		// wrlock the plugin while mutating the pgsql mapping vector that auth
+		// workers read under rdlock via resolve_pgsql_backend().
+		GloMyLdapAuth->wrlock();
 		GloMyLdapAuth->load_pgsql_ldap_mapping(resultset);
+		GloMyLdapAuth->wrunlock();
 	}
 	if (resultset) delete resultset;
 	// Populate runtime_pgsql_ldap_mapping admin table
@@ -6054,7 +6058,9 @@ void ProxySQL_Admin::__refresh_users(
 		if (no_resultset_supplied) {
 			uint64_t hash1 = GloMyAuth->get_runtime_checksum();
 			if (GloMyLdapAuth) {
+				GloMyLdapAuth->wrlock();
 				hash1 += GloMyLdapAuth->get_ldap_mapping_runtime_checksum();
+				GloMyLdapAuth->wrunlock();
 			}
 			uint32_t d32[2];
 			memcpy(&d32, &hash1, sizeof(hash1));
@@ -6330,7 +6336,12 @@ void ProxySQL_Admin::__add_active_users_ldap() {
 	if (error) {
 		proxy_error("Error on %s : %s\n", query, error);
 	} else {
+		// wrlock the plugin: load_mysql_ldap_mapping mutates the in-memory
+		// mapping vector that auth workers read (under rdlock) via
+		// resolve_mysql_backend(); without it those reads race the realloc.
+		GloMyLdapAuth->wrlock();
 		GloMyLdapAuth->load_mysql_ldap_mapping(resultset);
+		GloMyLdapAuth->wrunlock();
 	}
 	if (resultset) delete resultset;
 	resultset=NULL;
@@ -6929,7 +6940,11 @@ void ProxySQL_Admin::save_mysql_ldap_mapping_runtime_to_database(bool _runtime) 
 	}
 	proxy_debug(PROXY_DEBUG_ADMIN, 4, "%s\n", query);
 	admindb->execute(query);
+	// rdlock-equivalent: serialize the vector read against concurrent load_* /
+	// resolve_* (the plugin exposes only wrlock()).
+	GloMyLdapAuth->wrlock();
 	resultset=GloMyLdapAuth->dump_table_mysql_ldap_mapping();
+	GloMyLdapAuth->wrunlock();
 	if (resultset) {
 		char *query1=NULL;
 		char *query8=NULL;
@@ -6957,10 +6972,10 @@ void ProxySQL_Admin::save_mysql_ldap_mapping_runtime_to_database(bool _runtime) 
 			SQLite3_row *r1=*it;
 			int idx=row_idx%8;
 			if (row_idx<max_bulk_row_idx) { // bulk
-				rc=(*proxy_sqlite3_bind_int64)(statement8, (idx*7)+1, atoi(r1->fields[0])); ASSERT_SQLITE_OK(rc, admindb);
-				rc=(*proxy_sqlite3_bind_text)(statement8, (idx*7)+2, r1->fields[1], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
-				rc=(*proxy_sqlite3_bind_text)(statement8, (idx*7)+3, r1->fields[2], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
-				rc=(*proxy_sqlite3_bind_text)(statement8, (idx*7)+4, r1->fields[3], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
+				rc=(*proxy_sqlite3_bind_int64)(statement8, (idx*4)+1, atoi(r1->fields[0])); ASSERT_SQLITE_OK(rc, admindb);
+				rc=(*proxy_sqlite3_bind_text)(statement8, (idx*4)+2, r1->fields[1], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
+				rc=(*proxy_sqlite3_bind_text)(statement8, (idx*4)+3, r1->fields[2], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
+				rc=(*proxy_sqlite3_bind_text)(statement8, (idx*4)+4, r1->fields[3], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
 				if (idx==7) {
 					SAFE_SQLITE3_STEP2(statement8);
 					rc=(*proxy_sqlite3_clear_bindings)(statement8); ASSERT_SQLITE_OK(rc, admindb);
@@ -6996,7 +7011,10 @@ void ProxySQL_Admin::save_pgsql_ldap_mapping_runtime_to_database(bool _runtime) 
 	}
 	proxy_debug(PROXY_DEBUG_ADMIN, 4, "%s\n", query);
 	admindb->execute(query);
+	// serialize the vector read against concurrent load_* / resolve_*.
+	GloMyLdapAuth->wrlock();
 	resultset = GloMyLdapAuth->dump_table_pgsql_ldap_mapping();
+	GloMyLdapAuth->wrunlock();
 	if (resultset) {
 		char* query1 = NULL;
 		char* query8 = NULL;
@@ -7025,10 +7043,10 @@ void ProxySQL_Admin::save_pgsql_ldap_mapping_runtime_to_database(bool _runtime) 
 			SQLite3_row* r1 = *it;
 			int idx = row_idx % 8;
 			if (row_idx < max_bulk_row_idx) { // bulk
-				rc = (*proxy_sqlite3_bind_int64)(statement8, (idx * 7) + 1, atoi(r1->fields[0])); ASSERT_SQLITE_OK(rc, admindb);
-				rc = (*proxy_sqlite3_bind_text)(statement8, (idx * 7) + 2, r1->fields[1], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
-				rc = (*proxy_sqlite3_bind_text)(statement8, (idx * 7) + 3, r1->fields[2], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
-				rc = (*proxy_sqlite3_bind_text)(statement8, (idx * 7) + 4, r1->fields[3], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
+				rc = (*proxy_sqlite3_bind_int64)(statement8, (idx * 4) + 1, atoi(r1->fields[0])); ASSERT_SQLITE_OK(rc, admindb);
+				rc = (*proxy_sqlite3_bind_text)(statement8, (idx * 4) + 2, r1->fields[1], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
+				rc = (*proxy_sqlite3_bind_text)(statement8, (idx * 4) + 3, r1->fields[2], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
+				rc = (*proxy_sqlite3_bind_text)(statement8, (idx * 4) + 4, r1->fields[3], -1, SQLITE_TRANSIENT); ASSERT_SQLITE_OK(rc, admindb);
 				if (idx == 7) {
 					SAFE_SQLITE3_STEP2(statement8);
 					rc = (*proxy_sqlite3_clear_bindings)(statement8); ASSERT_SQLITE_OK(rc, admindb);

@@ -1116,6 +1116,10 @@ EXECUTION_STATE PgSQL_Protocol::process_handshake_response_packet(unsigned char*
 					(*myds)->sess->transaction_persistent = ldap_txn_persist;
 					(*myds)->sess->session_fast_forward = SESSION_FORWARD_TYPE_NONE;
 					(*myds)->sess->user_max_connections = ldap_max_conn;
+					// Propagate the plugin's use_ssl (set when okta_require_ssl=true) so the
+					// session-layer "SSL is required" gate rejects LDAP logins on
+					// unencrypted connections.
+					(*myds)->sess->use_ssl = ldap_use_ssl;
 					(*myds)->sess->use_ldap_auth = true;
 
 					// Set password to the backend user's password for backend connection
