@@ -213,6 +213,7 @@ All variables use the `ldap-` prefix when set via the admin interface.
 | `ldap-okta_default_hostgroup` | `0` | Default hostgroup for MySQL (PgSQL uses the backend user's hostgroup from `pgsql_users`) |
 | `ldap-okta_default_max_connections` | `1000` | Max frontend connections per Okta user |
 | `ldap-okta_starttls` | `false` | Use StartTLS (for `ldap://` URLs; not needed for `ldaps://`) |
+| `ldap-okta_require_ssl` | `false` | When `true`, reject LDAP-authenticated frontend logins arriving over an unencrypted (non-TLS) connection. Note: a PgSQL cleartext password is already on the wire by the time this gate rejects, so combine it with network-level protection; for full prevention require client TLS at the listener. |
 
 ## Authentication Flow
 

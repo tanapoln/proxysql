@@ -53,6 +53,7 @@ const std::vector<OktaVarDescriptor> Okta_LDAP_Plugin::var_descriptors = {
 	{"okta_default_hostgroup",    "0"},
 	{"okta_default_max_connections", "1000"},
 	{"okta_starttls",             "false"},
+	{"okta_require_ssl",          "false"},
 };
 
 // -----------------------------------------------------------------------
@@ -315,6 +316,7 @@ char* Okta_LDAP_Plugin::lookup(
 	if (cache_it != auth_cache.end()) {
 		const CachedAuthEntry& entry = cache_it->second;
 		int ttl = 3600, live_hg = 0, live_max = 1000;
+		bool live_require_ssl = false;
 		pthread_rwlock_rdlock(&main_lock);
 		auto it_ttl = variables.find("okta_cache_ttl");
 		if (it_ttl != variables.end()) ttl = atoi(it_ttl->second.c_str());
@@ -322,6 +324,8 @@ char* Okta_LDAP_Plugin::lookup(
 		if (it_hg2 != variables.end()) live_hg = atoi(it_hg2->second.c_str());
 		auto it_mc2 = variables.find("okta_default_max_connections");
 		if (it_mc2 != variables.end()) live_max = atoi(it_mc2->second.c_str());
+		auto it_rs = variables.find("okta_require_ssl");
+		if (it_rs != variables.end()) live_require_ssl = (it_rs->second == "true");
 		pthread_rwlock_unlock(&main_lock);
 
 		time_t now = time(NULL);
@@ -332,7 +336,7 @@ char* Okta_LDAP_Plugin::lookup(
 			// Re-read routing/limit attributes from live config instead of the
 			// values frozen at first-auth, so admin changes (LOAD LDAP VARIABLES
 			// TO RUNTIME) take effect for already-cached users.
-			*use_ssl = entry.use_ssl;
+			*use_ssl = live_require_ssl;
 			*default_hostgroup = live_hg;
 			if (default_schema) {
 				*default_schema = entry.default_schema.empty()
@@ -381,10 +385,16 @@ char* Okta_LDAP_Plugin::lookup(
 	int ttl = 3600;
 	auto it_ttl = variables.find("okta_cache_ttl");
 	if (it_ttl != variables.end()) ttl = atoi(it_ttl->second.c_str());
+
+	bool require_ssl = false;
+	auto it_rs = variables.find("okta_require_ssl");
+	if (it_rs != variables.end()) require_ssl = (it_rs->second == "true");
 	pthread_rwlock_unlock(&main_lock);
 
 	// --- 4. Populate output params ---
-	*use_ssl = false;
+	// When okta_require_ssl is set, report use_ssl=true so the session-layer
+	// "SSL is required" gate rejects LDAP logins on unencrypted connections.
+	*use_ssl = require_ssl;
 	*default_hostgroup = hg;
 	if (default_schema) *default_schema = strdup((char*)"information_schema");
 	*schema_locked = false;
@@ -591,7 +601,7 @@ bool Okta_LDAP_Plugin::set_variable(char *name, char *value) {
 	if (key == "okta_cache_ttl" || key == "okta_bind_timeout_ms" ||
 		key == "okta_default_hostgroup" || key == "okta_default_max_connections") {
 		if (!is_nonneg_int(value)) return false;
-	} else if (key == "okta_enabled" || key == "okta_starttls") {
+	} else if (key == "okta_enabled" || key == "okta_starttls" || key == "okta_require_ssl") {
 		if (strcmp(value, "true") != 0 && strcmp(value, "false") != 0) return false;
 	} else if (key == "okta_user_dn_format") {
 		if (strstr(value, "%s") == NULL) return false;   // must keep a username placeholder

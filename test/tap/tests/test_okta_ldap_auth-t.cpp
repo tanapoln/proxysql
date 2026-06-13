@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
 		plugin_path = "binaries/proxysql_okta_ldap_auth.dylib";
 	}
 
-	plan(58);
+	plan(60);
 
 	// ===================================================================
 	// 1. Load plugin via dlopen
@@ -654,6 +654,18 @@ int main(int argc, char** argv) {
 		uint64_t cb = plugin->get_ldap_mapping_runtime_checksum();
 		ok(ca != cb, "checksum changes when only the comment changes (cluster detects comment edits)");
 		delete ca_res; delete cb_res;
+	}
+
+	// ===================================================================
+	// 18. okta_require_ssl is a validated boolean (opt-in SSL gate for LDAP
+	// logins). The behavioral gate is covered by the integration suite.
+	// ===================================================================
+	{
+		ok(plugin->set_variable((char*)"okta_require_ssl", (char*)"true") == true,
+			"okta_require_ssl accepts 'true'");
+		ok(plugin->set_variable((char*)"okta_require_ssl", (char*)"maybe") == false,
+			"okta_require_ssl rejects a non-boolean value");
+		plugin->set_variable((char*)"okta_require_ssl", (char*)"false");
 	}
 
 	// ===================================================================
