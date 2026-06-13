@@ -94,7 +94,7 @@ int main(int argc, char** argv) {
 		plugin_path = "binaries/proxysql_okta_ldap_auth.dylib";
 	}
 
-	plan(45);
+	plan(58);
 
 	// ===================================================================
 	// 1. Load plugin via dlopen
@@ -547,6 +547,113 @@ int main(int argc, char** argv) {
 
 		// Re-enable
 		plugin->set_variable((char*)"okta_enabled", (char*)"true");
+	}
+
+	// ===================================================================
+	// 14. Empty password must be rejected WITHOUT attempting an LDAP bind
+	// (defense in depth vs. the RFC 4513 unauthenticated-bind auth bypass).
+	// Point the plugin at an unreachable URL: an empty password must
+	// short-circuit (no bind => bind/connect stats unchanged), while a
+	// non-empty password DOES attempt a bind (stats move) — proving the
+	// short-circuit is specific to the empty case.
+	// ===================================================================
+	{
+		plugin->set_variable((char*)"okta_enabled", (char*)"true");
+		plugin->set_variable((char*)"okta_url", (char*)"ldap://127.0.0.1:1");
+		plugin->set_variable((char*)"okta_bind_timeout_ms", (char*)"1000");
+
+		auto bind_attempts = [&]() -> long {
+			SQLite3_result *s = plugin->SQL3_getStats();
+			long v = 0;
+			if (s) {
+				for (auto *row : s->rows) {
+					if (row->fields[0] && (
+						strcmp(row->fields[0], "Okta_LDAP_ldap_bind_failure") == 0 ||
+						strcmp(row->fields[0], "Okta_LDAP_ldap_connect_errors") == 0 ||
+						strcmp(row->fields[0], "Okta_LDAP_ldap_bind_timeout") == 0)) {
+						v += atol(row->fields[1]);
+					}
+				}
+				delete s;
+			}
+			return v;
+		};
+
+		bool e_ssl=false; int e_hg=-1; char *e_schema=NULL; bool e_sl=false,e_tp=false,e_ff=false;
+		int e_mc=0; void *e_sha1=NULL; char *e_attrs=NULL; char *e_be=NULL;
+
+		long before = bind_attempts();
+		char *r_empty = plugin->lookup((char*)"u@x", (char*)"", USERNAME_FRONTEND,
+			&e_ssl,&e_hg,&e_schema,&e_sl,&e_tp,&e_ff,&e_mc,&e_sha1,&e_attrs,&e_be);
+		long after_empty = bind_attempts();
+		ok(r_empty == NULL, "lookup() with an empty password returns NULL");
+		ok(after_empty == before,
+			"empty password rejected WITHOUT an LDAP bind (bind/connect stats %ld == %ld)", after_empty, before);
+		if (r_empty) free(r_empty);
+
+		long before2 = bind_attempts();
+		char *r_real = plugin->lookup((char*)"u@x", (char*)"somepass", USERNAME_FRONTEND,
+			&e_ssl,&e_hg,&e_schema,&e_sl,&e_tp,&e_ff,&e_mc,&e_sha1,&e_attrs,&e_be);
+		long after_real = bind_attempts();
+		ok(r_real == NULL, "lookup() with an unreachable LDAP returns NULL");
+		ok(after_real > before2,
+			"a non-empty password DOES attempt a bind (stats %ld -> %ld) — short-circuit is empty-specific", before2, after_real);
+		if (r_real) free(r_real);
+
+		plugin->set_variable((char*)"okta_url", (char*)"");
+	}
+
+	// ===================================================================
+	// 15. Admin-variable validation: integer variables reject negative /
+	// non-numeric input (a negative okta_default_max_connections locks out all
+	// LDAP users; a negative okta_bind_timeout_ms makes an invalid timeval;
+	// etc.), and a rejected set must NOT change the stored value.
+	// ===================================================================
+	{
+		ok(plugin->set_variable((char*)"okta_default_max_connections", (char*)"250") == true,
+			"valid okta_default_max_connections accepted");
+		ok(plugin->set_variable((char*)"okta_default_max_connections", (char*)"-1") == false,
+			"negative okta_default_max_connections rejected");
+		ok(plugin->set_variable((char*)"okta_cache_ttl", (char*)"notanumber") == false,
+			"non-numeric okta_cache_ttl rejected");
+		ok(plugin->set_variable((char*)"okta_bind_timeout_ms", (char*)"-5") == false,
+			"negative okta_bind_timeout_ms rejected");
+		ok(plugin->set_variable((char*)"okta_default_hostgroup", (char*)"-2") == false,
+			"negative okta_default_hostgroup rejected");
+		char *v = plugin->get_variable((char*)"okta_default_max_connections");
+		ok(v && strcmp(v, "250") == 0,
+			"a rejected set leaves the previous valid value intact (got '%s')", v ? v : "NULL");
+		if (v) free(v);
+		plugin->set_variable((char*)"okta_default_max_connections", (char*)"1000");
+		plugin->set_variable((char*)"okta_cache_ttl", (char*)"3600");
+		plugin->set_variable((char*)"okta_bind_timeout_ms", (char*)"5000");
+		plugin->set_variable((char*)"okta_default_hostgroup", (char*)"0");
+	}
+
+	// ===================================================================
+	// 16. okta_user_dn_format must contain a %s placeholder — without one,
+	// every username collapses to a single fixed bind DN (fails open).
+	// ===================================================================
+	{
+		ok(plugin->set_variable((char*)"okta_user_dn_format", (char*)"uid=%s,ou=users,%s") == true,
+			"dn_format with a placeholder accepted");
+		ok(plugin->set_variable((char*)"okta_user_dn_format", (char*)"uid=fixed,ou=users,dc=x") == false,
+			"dn_format without a placeholder rejected");
+	}
+
+	// ===================================================================
+	// 17. The mapping runtime checksum must reflect comment changes, so cluster
+	// nodes detect comment-only edits (the comment was previously excluded).
+	// ===================================================================
+	{
+		SQLite3_result *ca_res = make_mapping_result({ {100, "alice@company.com", "okta_shared", "comment-A"} });
+		SQLite3_result *cb_res = make_mapping_result({ {100, "alice@company.com", "okta_shared", "comment-B"} });
+		plugin->wrlock(); plugin->load_mysql_ldap_mapping(ca_res); plugin->wrunlock();
+		uint64_t ca = plugin->get_ldap_mapping_runtime_checksum();
+		plugin->wrlock(); plugin->load_mysql_ldap_mapping(cb_res); plugin->wrunlock();
+		uint64_t cb = plugin->get_ldap_mapping_runtime_checksum();
+		ok(ca != cb, "checksum changes when only the comment changes (cluster detects comment edits)");
+		delete ca_res; delete cb_res;
 	}
 
 	// ===================================================================

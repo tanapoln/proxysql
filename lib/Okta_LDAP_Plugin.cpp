@@ -149,6 +149,8 @@ std::string Okta_LDAP_Plugin::build_user_dn(const char *username) {
 // LDAP simple bind against Okta
 // -----------------------------------------------------------------------
 bool Okta_LDAP_Plugin::ldap_authenticate(const char *username, const char *password) {
+	// Never issue an unauthenticated/empty-credential simple bind (RFC 4513).
+	if (!username || !password || !*password) return false;
 	std::string okta_url;
 	int timeout_ms = 5000;
 	bool use_starttls = false;
@@ -183,11 +185,14 @@ bool Okta_LDAP_Plugin::ldap_authenticate(const char *username, const char *passw
 	int version = LDAP_VERSION3;
 	ldap_set_option(ld, LDAP_OPT_PROTOCOL_VERSION, &version);
 
-	// Set network timeout
+	// Bound BOTH the network connect and the synchronous bind operation, so a
+	// slow/stalling directory cannot pin an auth worker thread indefinitely.
+	if (timeout_ms <= 0) timeout_ms = 5000;
 	struct timeval tv;
 	tv.tv_sec = timeout_ms / 1000;
 	tv.tv_usec = (timeout_ms % 1000) * 1000;
 	ldap_set_option(ld, LDAP_OPT_NETWORK_TIMEOUT, &tv);
+	ldap_set_option(ld, LDAP_OPT_TIMEOUT, &tv);
 
 	// Optionally StartTLS
 	if (use_starttls) {
@@ -295,7 +300,11 @@ char* Okta_LDAP_Plugin::lookup(
 
 	if (!enabled) return NULL;
 
-	if (!username || !pass) return NULL;
+	// Reject an empty (or NULL) password WITHOUT attempting an LDAP bind: a
+	// simple bind with a valid DN and an empty credential is an RFC 4513
+	// "unauthenticated bind" that some directories accept as success — an auth
+	// bypass. Covers both the MySQL and PgSQL frontends at this single choke point.
+	if (!username || !pass || !*pass) return NULL;
 
 	std::string uname(username);
 	std::string pass_hash = sha256_hex(pass);
@@ -305,10 +314,14 @@ char* Okta_LDAP_Plugin::lookup(
 	auto cache_it = auth_cache.find(uname);
 	if (cache_it != auth_cache.end()) {
 		const CachedAuthEntry& entry = cache_it->second;
-		int ttl = 3600;
+		int ttl = 3600, live_hg = 0, live_max = 1000;
 		pthread_rwlock_rdlock(&main_lock);
 		auto it_ttl = variables.find("okta_cache_ttl");
 		if (it_ttl != variables.end()) ttl = atoi(it_ttl->second.c_str());
+		auto it_hg2 = variables.find("okta_default_hostgroup");
+		if (it_hg2 != variables.end()) live_hg = atoi(it_hg2->second.c_str());
+		auto it_mc2 = variables.find("okta_default_max_connections");
+		if (it_mc2 != variables.end()) live_max = atoi(it_mc2->second.c_str());
 		pthread_rwlock_unlock(&main_lock);
 
 		time_t now = time(NULL);
@@ -316,8 +329,11 @@ char* Okta_LDAP_Plugin::lookup(
 			// Cache hit
 			stats.cache_hits.fetch_add(1, std::memory_order_relaxed);
 
+			// Re-read routing/limit attributes from live config instead of the
+			// values frozen at first-auth, so admin changes (LOAD LDAP VARIABLES
+			// TO RUNTIME) take effect for already-cached users.
 			*use_ssl = entry.use_ssl;
-			*default_hostgroup = entry.default_hostgroup;
+			*default_hostgroup = live_hg;
 			if (default_schema) {
 				*default_schema = entry.default_schema.empty()
 					? strdup((char*)"information_schema") : strdup(entry.default_schema.c_str());
@@ -325,7 +341,7 @@ char* Okta_LDAP_Plugin::lookup(
 			*schema_locked = entry.schema_locked;
 			*transaction_persistent = entry.transaction_persistent;
 			*fast_forward = entry.fast_forward;
-			*max_connections = entry.max_connections;
+			*max_connections = live_max;
 			if (sha1_pass) *sha1_pass = NULL;
 			if (attributes) *attributes = strdup("");
 			if (backend_username) {
@@ -549,14 +565,40 @@ char* Okta_LDAP_Plugin::get_variable(char *name) {
 	return NULL;
 }
 
+// True if s is a non-negative decimal integer that fits in a signed int.
+static bool is_nonneg_int(const char *s) {
+	if (!s || !*s) return false;
+	size_t len = 0;
+	for (const char *p = s; *p; ++p, ++len) {
+		if (*p < '0' || *p > '9') return false;
+	}
+	if (len > 10) return false;                 // more than 10 digits can exceed INT_MAX
+	long v = atol(s);
+	return v >= 0 && v <= 2147483647L;          // [0, INT_MAX]
+}
+
 bool Okta_LDAP_Plugin::set_variable(char *name, char *value) {
 	if (!name || !value) return false;
 	auto it = variables.find(name);
-	if (it != variables.end()) {
-		it->second = value;
-		return true;
+	if (it == variables.end()) return false;
+
+	// Reject values that would break authentication rather than silently
+	// storing them (every numeric consumer uses atoi, so garbage/negatives are
+	// dangerous: a negative max_connections locks out all users, a negative
+	// bind timeout makes an invalid timeval, a dn_format without %s collapses
+	// every user to one bind DN, etc.).
+	const std::string key(name);
+	if (key == "okta_cache_ttl" || key == "okta_bind_timeout_ms" ||
+		key == "okta_default_hostgroup" || key == "okta_default_max_connections") {
+		if (!is_nonneg_int(value)) return false;
+	} else if (key == "okta_enabled" || key == "okta_starttls") {
+		if (strcmp(value, "true") != 0 && strcmp(value, "false") != 0) return false;
+	} else if (key == "okta_user_dn_format") {
+		if (strstr(value, "%s") == NULL) return false;   // must keep a username placeholder
 	}
-	return false;
+
+	it->second = value;
+	return true;
 }
 
 // -----------------------------------------------------------------------
@@ -637,6 +679,7 @@ uint64_t Okta_LDAP_Plugin::get_ldap_mapping_runtime_checksum() {
 		for (const auto& entry : *mapping) {
 			for (char c : entry.frontend_entity) hash = hash * 31 + c;
 			for (char c : entry.backend_entity) hash = hash * 31 + c;
+			for (char c : entry.comment) hash = hash * 31 + c;
 			hash = hash * 31 + entry.priority;
 		}
 	}
